@@ -1,0 +1,16 @@
+.env
+.venv/
+.claude/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+henk.yaml
+logs/
+memory/
+workspace/
+control/
+tools/
+skills/

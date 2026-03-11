@@ -1,0 +1,25 @@
+henk:
+  name: Henk
+  language: nl
+
+provider:
+  default: openai
+  model: gpt-5-mini
+
+security:
+  react_loop:
+    max_tool_calls: 4
+    max_retries_content: 2
+    max_retries_technical: 1
+    identical_call_detection: true
+
+ui:
+  pipe_name: henk-gateway
+  history_hours: 24
+
+paths:
+  data_dir: ~/henk
+  memory_dir: ~/henk/memory
+  workspace_dir: ~/henk/workspace
+  logs_dir: ~/henk/logs
+  control_dir: ~/henk/control
