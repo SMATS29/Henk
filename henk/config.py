@@ -4,21 +4,51 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import yaml
 from dotenv import load_dotenv
 
 
-DEFAULT_CONFIG = {
+DEFAULT_CONFIG: dict[str, Any] = {
     "henk": {"name": "Henk", "language": "nl"},
     "provider": {"default": "openai", "model": "gpt-5-mini"},
     "security": {
+        "proxy": {
+            "enabled": True,
+            "allowed_domains": [
+                "google.com",
+                "www.google.com",
+                "wikipedia.org",
+                "en.wikipedia.org",
+                "nl.wikipedia.org",
+                "nos.nl",
+                "reddit.com",
+                "www.reddit.com",
+            ],
+            "allowed_methods": ["GET"],
+        },
         "react_loop": {
             "max_tool_calls": 4,
             "max_retries_content": 2,
             "max_retries_technical": 1,
             "identical_call_detection": True,
-        }
+        },
+        "file_manager": {
+            "read_roots": ["~/henk/memory", "~/henk/workspace"],
+            "write_scope": "workspace_only",
+        },
+        "code_runner": {
+            "max_cpu_seconds": 30,
+            "max_memory_mb": 512,
+            "max_runtime_seconds": 60,
+            "network": False,
+        },
+    },
+    "tools": {
+        "web_search": {"enabled": True, "timeout_seconds": 10},
+        "file_manager": {"enabled": True},
+        "code_runner": {"enabled": True},
     },
     "ui": {"pipe_name": "henk-gateway", "history_hours": 24},
     "paths": {
@@ -34,7 +64,7 @@ DEFAULT_CONFIG = {
 class Config:
     """Henk configuratie."""
 
-    def __init__(self, data: dict):
+    def __init__(self, data: dict[str, Any]):
         self._data = data
 
     @property
@@ -80,22 +110,42 @@ class Config:
 
     @property
     def max_tool_calls(self) -> int:
-        return self._data["security"]["react_loop"]["max_tool_calls"]
+        return int(self._data["security"]["react_loop"]["max_tool_calls"])
 
     @property
     def max_retries_content(self) -> int:
-        return self._data["security"]["react_loop"]["max_retries_content"]
+        return int(self._data["security"]["react_loop"]["max_retries_content"])
 
     @property
     def max_retries_technical(self) -> int:
-        return self._data["security"]["react_loop"]["max_retries_technical"]
+        return int(self._data["security"]["react_loop"]["max_retries_technical"])
 
     @property
-    def raw(self) -> dict:
+    def proxy_allowed_domains(self) -> list[str]:
+        return list(self._data["security"]["proxy"]["allowed_domains"])
+
+    @property
+    def proxy_allowed_methods(self) -> list[str]:
+        return list(self._data["security"]["proxy"]["allowed_methods"])
+
+    @property
+    def file_manager_read_roots(self) -> list[Path]:
+        return [Path(path).expanduser() for path in self._data["security"]["file_manager"]["read_roots"]]
+
+    @property
+    def code_runner_timeout_seconds(self) -> int:
+        return int(self._data["security"]["code_runner"]["max_runtime_seconds"])
+
+    @property
+    def web_search_timeout_seconds(self) -> int:
+        return int(self._data["tools"]["web_search"]["timeout_seconds"])
+
+    @property
+    def raw(self) -> dict[str, Any]:
         return self._data
 
 
-def _deep_merge(base: dict, override: dict) -> dict:
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Merge override into base recursively."""
     result = base.copy()
     for key, value in override.items():
@@ -108,11 +158,9 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 def load_config(data_dir: Path | None = None) -> Config:
     """Laad configuratie uit .env en henk.yaml."""
-    # Laad .env vanuit repo root en huidige directory
     load_dotenv(Path.cwd() / ".env")
     load_dotenv(Path(__file__).parent.parent / ".env")
 
-    # Bepaal data directory
     if data_dir is None:
         data_dir = Path.home() / "henk"
 
