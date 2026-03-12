@@ -61,6 +61,22 @@ class Gateway:
     def current_run_id(self) -> str | None:
         return self._current_run_id
 
+    @property
+    def content_retry_count(self) -> int:
+        return self._content_retry_count
+
+    @property
+    def technical_retry_count(self) -> int:
+        return self._technical_retry_count
+
+    @property
+    def max_retries_content(self) -> int:
+        return self._config.max_retries_content
+
+    @property
+    def max_retries_technical(self) -> int:
+        return self._config.max_retries_technical
+
     def reset_counters(self) -> None:
         """Reset tellers voor een nieuwe taak."""
         self._tool_call_count = 0
