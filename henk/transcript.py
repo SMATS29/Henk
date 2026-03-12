@@ -6,6 +6,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 
 class TranscriptWriter:
@@ -27,12 +28,12 @@ class TranscriptWriter:
         return self._file_path
 
     def write(self, role: str, content: str) -> None:
-        """Schrijf een enkel bericht naar het transcript."""
-        record = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "session_id": self._session_id,
-            "role": role,
-            "content": content,
-        }
+        """Schrijf een enkel chatbericht naar het transcript."""
+        event_type = "user_message" if role == "user" else "assistant_message"
+        self.log_event({"type": event_type, "session_id": self._session_id, "role": role, "content": content})
+
+    def log_event(self, event: dict[str, Any]) -> None:
+        """Schrijf een arbitrair event-record naar JSONL."""
+        record = {"timestamp": datetime.now(timezone.utc).isoformat(), **event}
         with open(self._file_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
