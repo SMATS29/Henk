@@ -127,16 +127,33 @@ class Brain:
                 },
             },
             {
-                "name": "file_manager",
-                "description": "Lees, schrijf of lijst bestanden binnen toegestane mappen.",
+                "name": "file_manager_read",
+                "description": "Lees een bestand binnen de toegestane mappen.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string", "description": "Pad naar het bestand"}},
+                    "required": ["path"],
+                },
+            },
+            {
+                "name": "file_manager_write",
+                "description": "Schrijf een bestand naar de workspace.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["read", "write", "list"]},
-                        "path": {"type": "string"},
-                        "content": {"type": "string"},
+                        "path": {"type": "string", "description": "Bestandsnaam (wordt geschreven in workspace)"},
+                        "content": {"type": "string", "description": "Inhoud van het bestand"},
                     },
-                    "required": ["action", "path"],
+                    "required": ["path", "content"],
+                },
+            },
+            {
+                "name": "file_manager_list",
+                "description": "Lijst bestanden in een map binnen de toegestane mappen.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string", "description": "Pad naar de map"}},
+                    "required": ["path"],
                 },
             },
             {
