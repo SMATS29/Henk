@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 import anthropic
-import openai
 
 from henk.config import Config
 
@@ -58,13 +57,7 @@ class Brain:
 
     def __init__(self, config: Config):
         self._config = config
-        self._provider = config.provider
-        if self._provider == "anthropic":
-            self._anthropic = anthropic.Anthropic(api_key=config.api_key)
-        elif self._provider == "openai":
-            self._openai = openai.OpenAI(api_key=config.api_key)
-        else:
-            raise ValueError(f"Onbekende provider: {self._provider}")
+        self._anthropic = anthropic.Anthropic(api_key=config.api_key)
         self._history: list[dict[str, str]] = []
 
     def greet(self) -> str:
@@ -76,10 +69,7 @@ class Brain:
         messages = self._history.copy()
         messages.append({"role": "user", "content": user_message})
 
-        if self._provider == "anthropic":
-            assistant_text = self._call_anthropic(messages)
-        else:
-            assistant_text = self._call_openai(messages)
+        assistant_text = self._call_anthropic(messages)
 
         if include_in_history:
             self._history.append({"role": "user", "content": user_message})
@@ -87,33 +77,51 @@ class Brain:
 
         return assistant_text
 
-    def next_step(self, user_message: str, observations: list[str]) -> dict[str, Any]:
-        """Bepaal de volgende stap voor de ReAct loop."""
-        if self._provider != "anthropic":
-            return {"type": "final", "content": self.think(user_message)}
+    def run_with_tools(self, user_message: str, tool_executor: Any) -> str:
+        """Voer een volledige tool-use cyclus uit."""
+        self._history.append({"role": "user", "content": user_message})
+        messages: list[dict[str, Any]] = self._history.copy()
 
-        messages: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
-        if observations:
-            messages.append({"role": "assistant", "content": "\n".join(observations)})
+        while True:
+            response = self._anthropic.messages.create(
+                model=self._config.model,
+                max_tokens=1024,
+                system=SYSTEM_PROMPT,
+                tools=self._anthropic_tools(),
+                messages=messages,
+            )
 
-        response = self._anthropic.messages.create(
-            model=self._config.model,
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            tools=self._anthropic_tools(),
-            messages=messages,
-        )
+            tool_use_blocks = [block for block in response.content if getattr(block, "type", "") == "tool_use"]
 
-        for block in response.content:
-            if getattr(block, "type", "") == "tool_use":
-                return {
-                    "type": "tool_call",
-                    "tool_name": block.name,
-                    "parameters": dict(block.input),
+            if not tool_use_blocks:
+                text = "".join(getattr(block, "text", "") for block in response.content).strip()
+                answer = text or "Ik heb nu geen antwoord."
+                self._history.append({"role": "assistant", "content": answer})
+                return answer
+
+            assistant_content = [
+                {
+                    "type": "tool_use",
+                    "id": block.id,
+                    "name": block.name,
+                    "input": dict(block.input),
                 }
+                for block in tool_use_blocks
+            ]
+            messages.append({"role": "assistant", "content": assistant_content})
 
-        text = "".join(getattr(block, "text", "") for block in response.content).strip()
-        return {"type": "final", "content": text or "Ik heb nu geen antwoord."}
+            tool_results = []
+            for block in tool_use_blocks:
+                result = tool_executor(block.name, dict(block.input))
+                if result.success and result.data is not None:
+                    content = str(result.data)
+                elif result.error:
+                    content = str(result.error.message)
+                else:
+                    content = "Geen resultaat"
+                tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": content})
+
+            messages.append({"role": "user", "content": tool_results})
 
     def _anthropic_tools(self) -> list[dict[str, Any]]:
         return [
@@ -178,49 +186,3 @@ class Brain:
             messages=messages,
         )
         return response.content[0].text
-
-    def _call_openai(self, messages: list[dict[str, str]]) -> str:
-        """Gebruik Responses API voor GPT-5-modellen, met chat fallback."""
-        if hasattr(self._openai, "responses"):
-            response = self._openai.responses.create(
-                model=self._config.model,
-                instructions=SYSTEM_PROMPT,
-                input=self._format_openai_input(messages),
-                max_output_tokens=1024,
-            )
-            text = getattr(response, "output_text", None)
-            if text:
-                return text.strip()
-            return self._extract_openai_output_text(response)
-
-        openai_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
-        response = self._openai.chat.completions.create(
-            model=self._config.model,
-            max_tokens=1024,
-            messages=openai_messages,
-        )
-        return response.choices[0].message.content
-
-    def _format_openai_input(self, messages: list[dict[str, str]]) -> str:
-        """Maak van de gespreksgeschiedenis een tekstprompt voor Responses API."""
-        lines = ["Gesprek tot nu toe:"]
-        for message in messages:
-            speaker = "Gebruiker" if message["role"] == "user" else "Henk"
-            lines.append(f"{speaker}: {message['content']}")
-        lines.append("")
-        lines.append("Reageer nu als Henk op het laatste gebruikersbericht.")
-        return "\n".join(lines)
-
-    def _extract_openai_output_text(self, response: object) -> str:
-        """Haal tekst uit een Responses API response als output_text ontbreekt."""
-        parts: list[str] = []
-        for item in getattr(response, "output", []):
-            for content in getattr(item, "content", []):
-                text = getattr(content, "text", None)
-                if text:
-                    parts.append(text)
-
-        if not parts:
-            raise RuntimeError("OpenAI response bevat geen tekst.")
-
-        return "".join(parts).strip()

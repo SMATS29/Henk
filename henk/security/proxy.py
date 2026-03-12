@@ -2,21 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
-from urllib.request import Request, urlopen
 
-
-@dataclass
-class SimpleResponse:
-    """Kleine response wrapper voor toolgebruik."""
-
-    status_code: int
-    text: str
-
-    def raise_for_status(self) -> None:
-        if self.status_code >= 400:
-            raise RuntimeError(f"HTTP foutstatus: {self.status_code}")
+import requests as http_requests
 
 
 class SecurityProxy:
@@ -34,7 +22,7 @@ class SecurityProxy:
             if any(marker in key.lower() for marker in suspicious):
                 raise PermissionError("Verdachte querystring geblokkeerd.")
 
-    def request(self, method: str, url: str, **kwargs) -> SimpleResponse:
+    def request(self, method: str, url: str, **kwargs) -> http_requests.Response:
         """Voer een HTTP request uit na validatie."""
         normalized_method = method.upper()
         if normalized_method not in self.allowed_methods:
@@ -48,8 +36,4 @@ class SecurityProxy:
         self._validate_query(url)
 
         timeout = kwargs.get("timeout", 10)
-        req = Request(url=url, method=normalized_method)
-        with urlopen(req, timeout=timeout) as response:
-            body = response.read().decode("utf-8", errors="replace")
-            status = getattr(response, "status", 200)
-        return SimpleResponse(status_code=status, text=body)
+        return http_requests.request(normalized_method, url, timeout=timeout)

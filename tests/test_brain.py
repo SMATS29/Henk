@@ -1,14 +1,15 @@
 """Tests voor de Brain."""
 
 from copy import deepcopy
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from henk.brain import Brain, SYSTEM_PROMPT
 from henk.config import Config, DEFAULT_CONFIG
+from henk.tools.base import ToolResult
 
 
 def _make_anthropic_response(text: str):
-    """Maak een mock Anthropic API response."""
     response = MagicMock()
     block = MagicMock()
     block.text = text
@@ -16,8 +17,7 @@ def _make_anthropic_response(text: str):
     return response
 
 
-def _make_config(*, provider: str, model: str) -> Config:
-    """Maak een testconfig met een expliciete provider."""
+def _make_config(*, provider: str = "anthropic", model: str = "claude-sonnet-4-6") -> Config:
     data = deepcopy(DEFAULT_CONFIG)
     data["provider"]["default"] = provider
     data["provider"]["model"] = model
@@ -26,13 +26,11 @@ def _make_config(*, provider: str, model: str) -> Config:
 
 @patch("henk.brain.anthropic.Anthropic")
 def test_brain_uses_system_prompt(mock_anthropic_cls):
-    """Brain stuurt system prompt mee naar Anthropic."""
     mock_client = MagicMock()
     mock_client.messages.create.return_value = _make_anthropic_response("Hoi!")
     mock_anthropic_cls.return_value = mock_client
 
-    config = _make_config(provider="anthropic", model="claude-sonnet-4-6")
-    brain = Brain(config)
+    brain = Brain(_make_config())
     brain.think("hallo")
 
     call_kwargs = mock_client.messages.create.call_args
@@ -41,7 +39,6 @@ def test_brain_uses_system_prompt(mock_anthropic_cls):
 
 @patch("henk.brain.anthropic.Anthropic")
 def test_brain_builds_message_history(mock_anthropic_cls):
-    """Brain bouwt conversatiegeschiedenis correct op."""
     mock_client = MagicMock()
     mock_client.messages.create.side_effect = [
         _make_anthropic_response("Antwoord 1"),
@@ -49,22 +46,20 @@ def test_brain_builds_message_history(mock_anthropic_cls):
     ]
     mock_anthropic_cls.return_value = mock_client
 
-    config = _make_config(provider="anthropic", model="claude-sonnet-4-6")
-    brain = Brain(config)
+    brain = Brain(_make_config())
     brain.think("bericht 1")
     brain.think("bericht 2")
 
-    second_call = mock_client.messages.create.call_args_list[1]
-    messages = second_call.kwargs["messages"]
-    assert len(messages) == 3
-    assert messages[0] == {"role": "user", "content": "bericht 1"}
-    assert messages[1] == {"role": "assistant", "content": "Antwoord 1"}
-    assert messages[2] == {"role": "user", "content": "bericht 2"}
+    messages = mock_client.messages.create.call_args_list[1].kwargs["messages"]
+    assert messages == [
+        {"role": "user", "content": "bericht 1"},
+        {"role": "assistant", "content": "Antwoord 1"},
+        {"role": "user", "content": "bericht 2"},
+    ]
 
 
 @patch("henk.brain.anthropic.Anthropic")
 def test_brain_greet_not_in_history(mock_anthropic_cls):
-    """Brain.greet() voegt de begroeting niet toe aan de geschiedenis."""
     mock_client = MagicMock()
     mock_client.messages.create.side_effect = [
         _make_anthropic_response("Hoi daar!"),
@@ -72,31 +67,41 @@ def test_brain_greet_not_in_history(mock_anthropic_cls):
     ]
     mock_anthropic_cls.return_value = mock_client
 
-    config = _make_config(provider="anthropic", model="claude-sonnet-4-6")
-    brain = Brain(config)
+    brain = Brain(_make_config())
     brain.greet()
     brain.think("vraag")
 
-    second_call = mock_client.messages.create.call_args_list[1]
-    messages = second_call.kwargs["messages"]
-    assert len(messages) == 1
-    assert messages[0] == {"role": "user", "content": "vraag"}
+    messages = mock_client.messages.create.call_args_list[1].kwargs["messages"]
+    assert messages == [{"role": "user", "content": "vraag"}]
 
 
-@patch("henk.brain.openai.OpenAI")
-def test_brain_uses_openai_responses_for_gpt5_mini(mock_openai_cls):
-    """OpenAI provider gebruikt Responses API met GPT-5 mini."""
+@patch("henk.brain.anthropic.Anthropic")
+def test_run_with_tools_keeps_history_and_returns_final_answer(mock_anthropic_cls):
     mock_client = MagicMock()
-    mock_response = MagicMock()
-    mock_response.output_text = "Hoi!"
-    mock_client.responses.create.return_value = mock_response
-    mock_openai_cls.return_value = mock_client
+    tool_block = SimpleNamespace(type="tool_use", id="tool-1", name="web_search", input={"query": "test"})
+    final_block = SimpleNamespace(type="text", text="Klaar")
+    mock_client.messages.create.side_effect = [
+        SimpleNamespace(content=[tool_block]),
+        SimpleNamespace(content=[final_block]),
+    ]
+    mock_anthropic_cls.return_value = mock_client
 
-    config = Config(deepcopy(DEFAULT_CONFIG))
-    brain = Brain(config)
-    brain.think("hallo")
+    brain = Brain(_make_config())
 
-    call_kwargs = mock_client.responses.create.call_args.kwargs
-    assert call_kwargs["model"] == "gpt-5-mini"
-    assert call_kwargs["instructions"] == SYSTEM_PROMPT
-    assert "Gebruiker: hallo" in call_kwargs["input"]
+    def executor(name: str, params: dict):
+        assert name == "web_search"
+        assert params == {"query": "test"}
+        return ToolResult(success=True, data="zoekresultaat", source_tag="")
+
+    out = brain.run_with_tools("zoek iets", executor)
+
+    assert out == "Klaar"
+    assert brain._history == [
+        {"role": "user", "content": "zoek iets"},
+        {"role": "assistant", "content": "Klaar"},
+    ]
+
+    second_messages = mock_client.messages.create.call_args_list[1].kwargs["messages"]
+    assert second_messages[0] == {"role": "user", "content": "zoek iets"}
+    assert second_messages[1]["role"] == "assistant"
+    assert second_messages[2]["role"] == "user"
