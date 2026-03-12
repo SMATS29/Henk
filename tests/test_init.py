@@ -20,7 +20,8 @@ def test_init_creates_directories(tmp_path, monkeypatch):
     expected_dirs = [
         "memory/active",
         "memory/episodes",
-        "memory/.staged",
+        "memory/.staged/pending",
+        "memory/.staged/archive",
         "workspace",
         "skills",
         "control",

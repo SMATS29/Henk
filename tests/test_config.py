@@ -10,6 +10,9 @@ def test_default_config_has_required_fields():
     assert config.provider == "anthropic"
     assert config.api_key_env_var == "ANTHROPIC_API_KEY"
     assert config.max_tool_calls == 4
+    assert config.memory_vector_enabled is True
+    assert config.memory_relevance_threshold == 0.3
+    assert config.memory_scoring["initial_score"] == 50
 
 
 def test_deep_merge():

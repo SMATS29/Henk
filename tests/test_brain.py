@@ -76,6 +76,22 @@ def test_brain_greet_not_in_history(mock_anthropic_cls):
 
 
 @patch("henk.brain.anthropic.Anthropic")
+def test_brain_appends_memory_context_to_system_prompt(mock_anthropic_cls):
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = _make_anthropic_response("Hoi!")
+    mock_anthropic_cls.return_value = mock_client
+    retrieval = MagicMock()
+    retrieval.get_context.return_value = "## Geheugen\nProject Henk"
+
+    brain = Brain(_make_config(), memory_retrieval=retrieval)
+    brain.think("status?")
+
+    system_prompt = mock_client.messages.create.call_args.kwargs["system"]
+    assert SYSTEM_PROMPT in system_prompt
+    assert "Project Henk" in system_prompt
+
+
+@patch("henk.brain.anthropic.Anthropic")
 def test_run_with_tools_keeps_history_and_returns_final_answer(mock_anthropic_cls):
     mock_client = MagicMock()
     tool_block = SimpleNamespace(type="tool_use", id="tool-1", name="web_search", input={"query": "test"})
@@ -105,3 +121,21 @@ def test_run_with_tools_keeps_history_and_returns_final_answer(mock_anthropic_cl
     assert second_messages[0] == {"role": "user", "content": "zoek iets"}
     assert second_messages[1]["role"] == "assistant"
     assert second_messages[2]["role"] == "user"
+
+
+@patch("henk.brain.anthropic.Anthropic")
+def test_summarize_session_uses_history(mock_anthropic_cls):
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [
+        _make_anthropic_response("Antwoord"),
+        _make_anthropic_response("Samenvatting"),
+    ]
+    mock_anthropic_cls.return_value = mock_client
+
+    brain = Brain(_make_config())
+    brain.think("wat deden we?")
+    summary = brain.summarize_session()
+
+    assert summary == "Samenvatting"
+    prompt = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert "Gebruiker: wat deden we?" in prompt

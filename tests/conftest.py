@@ -16,7 +16,8 @@ def tmp_henk_dir(tmp_path):
     dirs = [
         data_dir / "memory" / "active",
         data_dir / "memory" / "episodes",
-        data_dir / "memory" / ".staged",
+        data_dir / "memory" / ".staged" / "pending",
+        data_dir / "memory" / ".staged" / "archive",
         data_dir / "workspace",
         data_dir / "skills",
         data_dir / "control",
@@ -59,4 +60,6 @@ def mock_brain(config):
     brain = MagicMock()
     brain.think.return_value = "Test antwoord van Henk."
     brain.greet.return_value = "Hoi, ik ben Henk."
+    brain.summarize_session.return_value = "Samenvatting van de sessie."
+    brain.has_history = False
     return brain

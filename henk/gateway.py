@@ -186,6 +186,7 @@ class Gateway:
 
     def log_tool_result(self, tool_name: str, result: ToolResult) -> None:
         """Log een tool-result event."""
+        payload = "[MEMORY — niet gelogd]" if tool_name == "memory_write" else result.data
         self._transcript.log_event(
             {
                 "type": "tool_result",
@@ -194,7 +195,7 @@ class Gateway:
                 "tool": tool_name,
                 "success": result.success,
                 "source_tag": result.source_tag,
-                "payload": result.data,
+                "payload": payload,
                 "error": result.error.message if result.error else None,
             }
         )

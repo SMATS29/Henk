@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 import typer
@@ -10,6 +11,7 @@ from rich.console import Console
 from rich.theme import Theme
 
 from henk.config import load_config
+from henk.memory import ChangeType, MemoryRetrieval, MemoryStore, Provenance, RelevanceScorer, StagedChange, StagingManager
 
 app = typer.Typer(help="Henk - Persoonlijke AI Orchestrator")
 console = Console(theme=Theme({"henk": "cyan"}))
@@ -21,6 +23,20 @@ def _get_data_dir() -> Path:
 
 def _control_path(name: str) -> Path:
     return _get_data_dir() / "control" / name
+
+
+def _build_memory_services(config):
+    store = MemoryStore(config.memory_dir, initial_score=config.memory_scoring["initial_score"])
+    staging = StagingManager(config.memory_dir / ".staged", store)
+    scorer = RelevanceScorer(**config.memory_scoring)
+    retrieval = MemoryRetrieval(
+        config.memory_dir,
+        store,
+        scorer,
+        vector_enabled=config.memory_vector_enabled,
+        relevance_threshold=config.memory_relevance_threshold,
+    )
+    return store, staging, scorer, retrieval
 
 
 @app.command()
@@ -37,7 +53,8 @@ def init():
     dirs = [
         data_dir / "memory" / "active",
         data_dir / "memory" / "episodes",
-        data_dir / "memory" / ".staged",
+        data_dir / "memory" / ".staged" / "pending",
+        data_dir / "memory" / ".staged" / "archive",
         data_dir / "workspace",
         data_dir / "skills",
         data_dir / "control",
@@ -133,6 +150,56 @@ def status():
 
 
 @app.command()
+def review():
+    """Review staged geheugenwijzigingen en archiveringskandidaten."""
+    data_dir = _get_data_dir()
+    if not data_dir.exists():
+        console.print("[red]Henk is nog niet geinitialiseerd.[/red] Voer eerst uit: [bold]henk init[/bold]")
+        raise typer.Exit(code=1)
+
+    config = load_config(data_dir)
+    store, staging, scorer, retrieval = _build_memory_services(config)
+    pending_changes = staging.list_pending()
+
+    if not pending_changes:
+        console.print("Geen staged geheugenwijzigingen.")
+
+    for change in pending_changes:
+        preview = " ".join(change.proposed_content.split())[:300]
+        console.print(f"\n[bold]{change.id}[/bold] [{change.change_type.value}]")
+        console.print(f"Herkomst: {change.provenance.value}")
+        console.print(f"Reden: {change.reason}")
+        console.print(f"Inhoud: {preview}")
+        if change.suspicious:
+            console.print("[bold red]Waarschuwing: verdacht geheugenvoorstel.[/bold red]")
+        if typer.confirm("Goedkeuren?", default=not change.suspicious):
+            staging.approve(change.id)
+            console.print("[green]Goedgekeurd.[/green]")
+        else:
+            staging.reject(change.id)
+            console.print("[yellow]Afgekeurd.[/yellow]")
+
+    active_items = store.list_items("active") + store.list_items("episodes")
+    original_scores = {item.id: item.score for item in active_items}
+    scorer.apply_decay(active_items)
+    for item in active_items:
+        if item.score != original_scores[item.id]:
+            store.save_item(item)
+
+    archive_candidates = scorer.get_archive_candidates(active_items)
+    if archive_candidates:
+        console.print("\n[bold]Archiveringskandidaten[/bold]")
+    for item in archive_candidates:
+        console.print(f"- {item.title} ({item.score}) [{item.path}]")
+        if typer.confirm("Archiveren?", default=False):
+            store.archive_item(item)
+            console.print("[green]Gearchiveerd.[/green]")
+
+    retrieval.rebuild_index()
+    console.print("\nReview afgerond.")
+
+
+@app.command()
 def chat():
     """Start een interactieve chatsessie met Henk."""
     data_dir = _get_data_dir()
@@ -163,17 +230,20 @@ def chat():
     from henk.security.proxy import SecurityProxy
     from henk.tools.code_runner import CodeRunnerTool
     from henk.tools.file_manager import FileManagerTool
+    from henk.tools.memory_write import MemoryWriteTool
     from henk.tools.web_search import WebSearchTool
     from henk.transcript import TranscriptWriter
 
+    store, staging, _, retrieval = _build_memory_services(config)
     transcript = TranscriptWriter(config.logs_dir)
-    brain = Brain(config)
+    brain = Brain(config, memory_retrieval=retrieval)
     gateway = Gateway(config, brain, transcript)
     proxy = SecurityProxy(config.proxy_allowed_domains, config.proxy_allowed_methods)
     tools = {
         "web_search": WebSearchTool(proxy=proxy, timeout_seconds=config.web_search_timeout_seconds),
         "file_manager": FileManagerTool([str(p) for p in config.file_manager_read_roots], config.workspace_dir),
         "code_runner": CodeRunnerTool(config.workspace_dir, config.code_runner_timeout_seconds),
+        "memory_write": MemoryWriteTool(staging),
     }
     react_loop = ReactLoop(brain=brain, gateway=gateway, tools=tools)
     gateway.set_react_loop(react_loop)
@@ -212,6 +282,26 @@ def chat():
 
     except KeyboardInterrupt:
         pass
+
+    if brain.has_history:
+        summary = brain.summarize_session()
+        if summary:
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            staging.stage_change(
+                StagedChange(
+                    id="",
+                    change_type=ChangeType.CREATE,
+                    target_item_id=None,
+                    proposed_content=summary,
+                    proposed_description="Korte samenvatting van een recente chatsessie.",
+                    provenance=Provenance.AGENT_SUGGESTED,
+                    reason="Automatische sessiesamenvatting bij afsluiten van henk chat.",
+                    timestamp=datetime.now(timezone.utc),
+                    proposed_title=f"Sessie {today}",
+                    target_path=f"episodes/{today}.md",
+                )
+            )
+            console.print("[dim]Sessie-samenvatting in staging gezet.[/dim]")
 
     console.print(f"\nTranscript bewaard in {transcript.file_path}")
 

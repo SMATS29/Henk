@@ -48,6 +48,17 @@ tools:
   code_runner:
     enabled: true
 
+memory:
+  vector: true
+  relevance_threshold: 0.3
+  review_schedule: daily
+  store_third_party_pii: false
+  scoring:
+    initial_score: 50
+    decay_per_week: 10
+    use_boost: 10
+    archive_threshold: 10
+
 ui:
   pipe_name: henk-gateway
   history_hours: 24

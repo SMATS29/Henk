@@ -50,6 +50,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "file_manager": {"enabled": True},
         "code_runner": {"enabled": True},
     },
+    "memory": {
+        "vector": True,
+        "relevance_threshold": 0.3,
+        "review_schedule": "daily",
+        "store_third_party_pii": False,
+        "scoring": {
+            "initial_score": 50,
+            "decay_per_week": 10,
+            "use_boost": 10,
+            "archive_threshold": 10,
+        },
+    },
     "ui": {"pipe_name": "henk-gateway", "history_hours": 24},
     "paths": {
         "data_dir": "~/henk",
@@ -138,6 +150,18 @@ class Config:
     @property
     def web_search_timeout_seconds(self) -> int:
         return int(self._data["tools"]["web_search"]["timeout_seconds"])
+
+    @property
+    def memory_vector_enabled(self) -> bool:
+        return bool(self._data["memory"]["vector"])
+
+    @property
+    def memory_relevance_threshold(self) -> float:
+        return float(self._data["memory"]["relevance_threshold"])
+
+    @property
+    def memory_scoring(self) -> dict[str, int]:
+        return dict(self._data["memory"]["scoring"])
 
     @property
     def raw(self) -> dict[str, Any]:

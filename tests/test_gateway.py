@@ -1,7 +1,10 @@
 """Tests voor de Gateway."""
 
+import json
+
 import pytest
 
+from henk.tools.base import ToolResult
 from henk.gateway import Gateway, KillSwitchActive
 from henk.transcript import TranscriptWriter
 
@@ -76,3 +79,14 @@ def test_gateway_logs_messages(config, mock_brain):
     content = transcript.file_path.read_text(encoding="utf-8")
     assert "hallo Henk" in content
     assert "Test antwoord van Henk." in content
+
+
+def test_gateway_masks_memory_write_payload(config, mock_brain):
+    transcript = TranscriptWriter(config.logs_dir)
+    gateway = Gateway(config, mock_brain, transcript)
+
+    gateway.log_tool_result("memory_write", ToolResult(success=True, data="gevoelige payload", source_tag="[TOOL:memory_write]"))
+
+    last_record = transcript.file_path.read_text(encoding="utf-8").strip().splitlines()[-1]
+    payload = json.loads(last_record)["payload"]
+    assert payload == "[MEMORY — niet gelogd]"
