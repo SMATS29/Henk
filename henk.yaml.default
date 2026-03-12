@@ -7,11 +7,46 @@ provider:
   model: gpt-5-mini
 
 security:
+  proxy:
+    enabled: true
+    allowed_domains:
+      - google.com
+      - www.google.com
+      - wikipedia.org
+      - en.wikipedia.org
+      - nl.wikipedia.org
+      - nos.nl
+      - reddit.com
+      - www.reddit.com
+    allowed_methods:
+      - GET
+
   react_loop:
     max_tool_calls: 4
     max_retries_content: 2
     max_retries_technical: 1
     identical_call_detection: true
+
+  file_manager:
+    read_roots:
+      - ~/henk/memory
+      - ~/henk/workspace
+    write_scope: workspace_only
+
+  code_runner:
+    max_cpu_seconds: 30
+    max_memory_mb: 512
+    max_runtime_seconds: 60
+    network: false
+
+tools:
+  web_search:
+    enabled: true
+    timeout_seconds: 10
+  file_manager:
+    enabled: true
+  code_runner:
+    enabled: true
 
 ui:
   pipe_name: henk-gateway

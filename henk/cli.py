@@ -19,6 +19,10 @@ def _get_data_dir() -> Path:
     return Path.home() / "henk"
 
 
+def _control_path(name: str) -> Path:
+    return _get_data_dir() / "control" / name
+
+
 @app.command()
 def init():
     """Initialiseer Henk's data directory."""
@@ -54,24 +58,78 @@ def init():
         default_config = Path(__file__).parent.parent / "henk.yaml.default"
         if default_config.exists():
             shutil.copy2(default_config, config_dest)
-        else:
-            config_dest.write_text(
-                "henk:\n  name: Henk\n  language: nl\n\n"
-                "provider:\n  default: openai\n  model: gpt-5-mini\n\n"
-                "security:\n  react_loop:\n    max_tool_calls: 4\n    max_retries_content: 2\n"
-                "    max_retries_technical: 1\n    identical_call_detection: true\n\n"
-                "ui:\n  pipe_name: henk-gateway\n  history_hours: 24\n\n"
-                "paths:\n  data_dir: ~/henk\n  memory_dir: ~/henk/memory\n"
-                "  workspace_dir: ~/henk/workspace\n  logs_dir: ~/henk/logs\n"
-                "  control_dir: ~/henk/control\n",
-                encoding="utf-8",
-            )
 
     for name in ("graceful_stop", "hard_stop"):
         ctrl_file = data_dir / "control" / name
         ctrl_file.write_text("false", encoding="utf-8")
 
     console.print("[bold green]Henk is geinitialiseerd.[/bold green] Start met: [bold]henk chat[/bold]")
+
+
+@app.command()
+def stop(clear: bool = typer.Option(False, "--clear", help="Wis workspace bestanden na stop")):
+    """Activeer hard stop voor Henk."""
+    data_dir = _get_data_dir()
+    _control_path("hard_stop").parent.mkdir(parents=True, exist_ok=True)
+    _control_path("hard_stop").write_text("true", encoding="utf-8")
+    if clear:
+        workspace = data_dir / "workspace"
+        if workspace.exists():
+            for item in workspace.iterdir():
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink(missing_ok=True)
+        console.print("Henk is gestopt. Werkbestanden gewist.")
+        return
+    console.print("Henk is gestopt.")
+
+
+@app.command()
+def pause():
+    """Pauzeer nieuwe taken."""
+    _control_path("graceful_stop").parent.mkdir(parents=True, exist_ok=True)
+    _control_path("graceful_stop").write_text("true", encoding="utf-8")
+    console.print("Henk is gepauzeerd. Geen nieuwe taken.")
+
+
+@app.command()
+def resume():
+    """Hervat na een pause."""
+    _control_path("graceful_stop").parent.mkdir(parents=True, exist_ok=True)
+    _control_path("graceful_stop").write_text("false", encoding="utf-8")
+    console.print("Henk is hervat.")
+
+
+@app.command()
+def status():
+    """Toon status van gateway, kill switch en logs."""
+    data_dir = _get_data_dir()
+    hard = _control_path("hard_stop").read_text(encoding="utf-8").strip().lower() == "true" if _control_path("hard_stop").exists() else False
+    graceful = _control_path("graceful_stop").read_text(encoding="utf-8").strip().lower() == "true" if _control_path("graceful_stop").exists() else False
+    if hard:
+        state = "gestopt"
+    elif graceful:
+        state = "gepauzeerd"
+    else:
+        state = "normaal"
+
+    workspace = data_dir / "workspace"
+    file_count = 0
+    if workspace.exists():
+        file_count = sum(1 for _ in workspace.rglob("*"))
+
+    logs_dir = data_dir / "logs"
+    latest_log = "geen"
+    if logs_dir.exists():
+        logs = sorted(logs_dir.glob("transcript_*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if logs:
+            latest_log = str(logs[0])
+
+    console.print("Gateway:     actief (embedded in CLI)")
+    console.print(f"Kill switch: {state}")
+    console.print(f"Workspace:   {workspace} ({file_count} bestanden)")
+    console.print(f"Laatste log: {latest_log}")
 
 
 @app.command()
@@ -85,6 +143,13 @@ def chat():
 
     config = load_config(data_dir)
 
+    if _control_path("hard_stop").exists() and _control_path("hard_stop").read_text(encoding="utf-8").strip().lower() == "true":
+        console.print("[red]Henk is gestopt. Gebruik 'henk resume' of reset hard_stop handmatig.[/red]")
+        raise typer.Exit(code=1)
+
+    if _control_path("graceful_stop").exists() and _control_path("graceful_stop").read_text(encoding="utf-8").strip().lower() == "true":
+        console.print("[yellow]Henk staat op pauze. Nieuwe taken worden geweigerd.[/yellow]")
+
     if not config.api_key:
         console.print(
             f"[red]{config.api_key_env_var} niet gevonden.[/red]\n"
@@ -94,11 +159,23 @@ def chat():
 
     from henk.brain import Brain
     from henk.gateway import Gateway, KillSwitchActive
+    from henk.react_loop import ReactLoop
+    from henk.security.proxy import SecurityProxy
+    from henk.tools.code_runner import CodeRunnerTool
+    from henk.tools.file_manager import FileManagerTool
+    from henk.tools.web_search import WebSearchTool
     from henk.transcript import TranscriptWriter
 
     transcript = TranscriptWriter(config.logs_dir)
     brain = Brain(config)
     gateway = Gateway(config, brain, transcript)
+    proxy = SecurityProxy(config.proxy_allowed_domains, config.proxy_allowed_methods)
+    tools = {
+        "web_search": WebSearchTool(proxy=proxy, timeout_seconds=config.web_search_timeout_seconds),
+        "file_manager": FileManagerTool([str(p) for p in config.file_manager_read_roots], config.workspace_dir),
+        "code_runner": CodeRunnerTool(config.workspace_dir, config.code_runner_timeout_seconds),
+    }
+    react_loop = ReactLoop(brain=brain, gateway=gateway, tools=tools)
 
     try:
         greeting = gateway.get_greeting()
@@ -120,8 +197,10 @@ def chat():
                 continue
 
             try:
-                response = gateway.process(user_input)
+                transcript.write("user", user_input)
+                response = react_loop.run(user_input)
                 if response:
+                    transcript.write("assistant", response)
                     console.print(f"[henk]{response}[/henk]\n")
             except KillSwitchActive as error:
                 console.print(f"[red]Henk is gestopt ({error.switch_type}).[/red]")
