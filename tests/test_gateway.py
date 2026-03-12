@@ -30,14 +30,28 @@ def test_gateway_blocks_on_graceful_stop(config, mock_brain):
     assert exc_info.value.switch_type == "graceful_stop"
 
 
-def test_gateway_passes_message_to_brain(config, mock_brain):
-    """Gateway stuurt berichten door naar Brain."""
+def test_gateway_passes_message_to_brain_without_react_loop(config, mock_brain):
+    """Gateway stuurt berichten door naar Brain als geen loop is gezet."""
     transcript = TranscriptWriter(config.logs_dir)
     gateway = Gateway(config, mock_brain, transcript)
 
     response = gateway.process("test bericht")
     assert response == "Test antwoord van Henk."
     mock_brain.think.assert_called_once_with("test bericht")
+
+
+def test_gateway_uses_react_loop_when_set(config, mock_brain):
+    """Gateway routeert berichten via ReactLoop als die gekoppeld is."""
+    transcript = TranscriptWriter(config.logs_dir)
+    gateway = Gateway(config, mock_brain, transcript)
+    react_loop = mock_brain
+    react_loop.run.return_value = "Via loop"
+
+    gateway.set_react_loop(react_loop)
+    response = gateway.process("test bericht")
+
+    assert response == "Via loop"
+    react_loop.run.assert_called_once_with("test bericht")
 
 
 def test_gateway_ignores_empty_input(config, mock_brain):

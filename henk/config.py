@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "henk": {"name": "Henk", "language": "nl"},
-    "provider": {"default": "openai", "model": "gpt-5-mini"},
+    "provider": {"default": "anthropic", "model": "claude-sonnet-4-6"},
     "security": {
         "proxy": {
             "enabled": True,
@@ -80,7 +80,6 @@ class Config:
         """Geef de naam van de env var voor de actieve provider."""
         key_map = {
             "anthropic": "ANTHROPIC_API_KEY",
-            "openai": "OPENAI_API_KEY",
         }
         return key_map.get(self.provider, f"{self.provider.upper()}_API_KEY")
 

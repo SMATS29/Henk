@@ -176,6 +176,7 @@ def chat():
         "code_runner": CodeRunnerTool(config.workspace_dir, config.code_runner_timeout_seconds),
     }
     react_loop = ReactLoop(brain=brain, gateway=gateway, tools=tools)
+    gateway.set_react_loop(react_loop)
 
     try:
         greeting = gateway.get_greeting()
@@ -197,10 +198,8 @@ def chat():
                 continue
 
             try:
-                transcript.write("user", user_input)
-                response = react_loop.run(user_input)
+                response = gateway.process(user_input)
                 if response:
-                    transcript.write("assistant", response)
                     console.print(f"[henk]{response}[/henk]\n")
             except KillSwitchActive as error:
                 console.print(f"[red]Henk is gestopt ({error.switch_type}).[/red]")

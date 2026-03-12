@@ -22,19 +22,25 @@ def test_proxy_blocks_domains_not_allowlisted():
         proxy.request("GET", "https://evil.com")
 
 
-@patch("henk.security.proxy.urlopen")
-def test_proxy_allows_get_for_allowlisted_domain(mock_urlopen):
+@patch("henk.security.proxy.http_requests.request")
+def test_proxy_allows_get_for_allowlisted_domain(mock_request):
     mock_response = MagicMock()
-    mock_response.read.return_value = b"ok"
-    mock_response.status = 200
-    mock_urlopen.return_value.__enter__.return_value = mock_response
+    mock_response.status_code = 200
+    mock_response.text = "ok"
+    mock_request.return_value = mock_response
     proxy = SecurityProxy(["example.com"], ["GET"])
 
     result = proxy.request("GET", "https://example.com")
 
     assert result.status_code == 200
     assert result.text == "ok"
-    mock_urlopen.assert_called_once()
+    mock_request.assert_called_once_with("GET", "https://example.com", timeout=10)
+
+
+def test_proxy_blocks_suspicious_query_parameters():
+    proxy = SecurityProxy(["example.com"], ["GET"])
+    with pytest.raises(PermissionError):
+        proxy.request("GET", "https://example.com?q=1&api_key=secret")
 
 
 def test_path_validator_blocks_path_traversal(tmp_path):

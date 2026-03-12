@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from henk.gateway import Gateway, LoopDecision
-from henk.tools.base import BaseTool, ToolResult
+from henk.tools.base import BaseTool, ErrorType, ToolError, ToolResult
 
 
 class ReactLoop:
@@ -16,53 +16,56 @@ class ReactLoop:
         self._gateway = gateway
         self._tools = tools
 
+    def _map_tool(self, tool_name: str, params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        mapped_params = dict(params)
+        if tool_name == "file_manager_read":
+            return "file_manager", {"action": "read", **mapped_params}
+        if tool_name == "file_manager_write":
+            return "file_manager", {"action": "write", **mapped_params}
+        if tool_name == "file_manager_list":
+            return "file_manager", {"action": "list", **mapped_params}
+        return tool_name, mapped_params
+
     def run(self, user_message: str) -> str:
         """Voer een volledige ReAct-cyclus uit voor een gebruikersbericht."""
         self._gateway.reset_counters()
-        tool_results: list[str] = []
 
-        while True:
-            step = self._brain.next_step(user_message=user_message, observations=tool_results)
-            if step["type"] == "final":
-                return step["content"]
+        def execute_tool(tool_name: str, params: dict[str, Any]) -> ToolResult:
+            mapped_name, mapped_params = self._map_tool(tool_name, params)
 
-            if step["type"] != "tool_call":
-                return "Ik kon de taak niet afronden."
+            decision = self._gateway.check_tool_call(mapped_name, mapped_params)
+            if decision.decision != LoopDecision.ALLOW:
+                if decision.decision == LoopDecision.DENY_KILL_SWITCH:
+                    reason = f"Gestopt door kill switch: {decision.reason}."
+                elif decision.decision == LoopDecision.DENY_LIMIT:
+                    reason = "Ik stop hier: tool-limiet bereikt."
+                else:
+                    reason = "Ik stop hier: identieke tool-call gedetecteerd."
+                return ToolResult(
+                    success=False,
+                    data=None,
+                    source_tag="",
+                    error=ToolError(ErrorType.CONTENT, reason, retry_useful=False),
+                )
 
-            tool_name = step["tool_name"]
-            params = dict(step.get("parameters", {}))
+            run_id = self._gateway.log_tool_call(mapped_name, mapped_params)
+            tool = self._tools.get(mapped_name)
+            if not tool:
+                return ToolResult(
+                    success=False,
+                    data=None,
+                    source_tag="",
+                    error=ToolError(ErrorType.CONTENT, f"Onbekende tool: {mapped_name}", retry_useful=False),
+                )
 
-            mapped_tool_name = tool_name
-            if tool_name == "file_manager_read":
-                mapped_tool_name = "file_manager"
-                params = {"action": "read", **params}
-            elif tool_name == "file_manager_write":
-                mapped_tool_name = "file_manager"
-                params = {"action": "write", **params}
-            elif tool_name == "file_manager_list":
-                mapped_tool_name = "file_manager"
-                params = {"action": "list", **params}
+            if mapped_name == "file_manager" and mapped_params.get("action") == "write":
+                mapped_params["run_id"] = run_id
+            if mapped_name == "code_runner":
+                mapped_params["run_id"] = run_id
 
-            decision = self._gateway.check_tool_call(mapped_tool_name, params)
-            if decision.decision == LoopDecision.DENY_KILL_SWITCH:
-                return f"Gestopt door kill switch: {decision.reason}."
-            if decision.decision == LoopDecision.DENY_LIMIT:
-                return "Ik stop hier: tool-limiet bereikt."
-            if decision.decision == LoopDecision.DENY_IDENTICAL:
-                return "Ik stop hier: identieke tool-call gedetecteerd."
-
-            run_id = self._gateway.log_tool_call(mapped_tool_name, params)
-            tool = self._tools[mapped_tool_name]
-            if "run_id" in tool.parameters.get("required", []) and "run_id" not in params:
-                params["run_id"] = run_id
-            result: ToolResult = tool.execute(**params)
+            result = tool.execute(**mapped_params)
             self._gateway.register_tool_result(result)
-            self._gateway.log_tool_result(mapped_tool_name, result)
-            if result.data:
-                tool_results.append(str(result.data))
+            self._gateway.log_tool_result(mapped_name, result)
+            return result
 
-            if not result.success and result.error:
-                if result.error.error_type.value == "content" and self._gateway.content_retry_count > self._gateway.max_retries_content:
-                    return "Ik stop: te veel inhoudelijke tool-fouten."
-                if result.error.error_type.value == "technical" and self._gateway.technical_retry_count > self._gateway.max_retries_technical:
-                    return "Ik stop: te veel technische tool-fouten."
+        return self._brain.run_with_tools(user_message, execute_tool)

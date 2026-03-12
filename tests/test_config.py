@@ -6,9 +6,9 @@ from henk.config import Config, DEFAULT_CONFIG, _deep_merge, load_config
 def test_default_config_has_required_fields():
     """Default config bevat alle verplichte velden."""
     config = Config(DEFAULT_CONFIG)
-    assert config.model == "gpt-5-mini"
-    assert config.provider == "openai"
-    assert config.api_key_env_var == "OPENAI_API_KEY"
+    assert config.model == "claude-sonnet-4-6"
+    assert config.provider == "anthropic"
+    assert config.api_key_env_var == "ANTHROPIC_API_KEY"
     assert config.max_tool_calls == 4
 
 
@@ -26,13 +26,13 @@ def test_load_config_with_yaml(tmp_path):
     data_dir.mkdir()
     config_file = data_dir / "henk.yaml"
     config_file.write_text(
-        "provider:\n  model: gpt-5-mini\n",
+        "provider:\n  model: claude-sonnet-4-6\n",
         encoding="utf-8",
     )
 
     config = load_config(data_dir)
-    assert config.model == "gpt-5-mini"
-    assert config.provider == "openai"
+    assert config.model == "claude-sonnet-4-6"
+    assert config.provider == "anthropic"
 
 
 def test_load_config_uses_provider_for_api_key_env_var(tmp_path):

@@ -52,6 +52,7 @@ class Gateway:
         self._technical_retry_count = 0
         self._call_history: set[str] = set()
         self._current_run_id: str | None = None
+        self._react_loop = None
 
     @property
     def tool_call_count(self) -> int:
@@ -140,8 +141,12 @@ class Gateway:
         elif result.error.error_type == ErrorType.TECHNICAL:
             self._technical_retry_count += 1
 
+    def set_react_loop(self, react_loop) -> None:
+        """Koppel de ReAct-loop aan de Gateway."""
+        self._react_loop = react_loop
+
     def process(self, user_message: str) -> str:
-        """Verwerk een gebruikersbericht via de Brain."""
+        """Verwerk een gebruikersbericht via de ReAct-loop."""
         active_switch = self.check_kill_switches()
         if active_switch:
             raise KillSwitchActive(active_switch)
@@ -151,7 +156,10 @@ class Gateway:
 
         self.reset_counters()
         self._transcript.write("user", user_message)
-        response = self._brain.think(user_message)
+        if self._react_loop is None:
+            response = self._brain.think(user_message)
+        else:
+            response = self._react_loop.run(user_message)
         self._transcript.write("assistant", response)
         return response
 
