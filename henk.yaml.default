@@ -2,9 +2,32 @@ henk:
   name: Henk
   language: nl
 
-provider:
-  default: anthropic
-  model: claude-sonnet-4-6
+providers:
+  anthropic:
+    api_key_env: ANTHROPIC_API_KEY
+  openai:
+    api_key_env: OPENAI_API_KEY
+  ollama:
+    base_url: http://localhost:11434/v1
+  lmstudio:
+    base_url: http://localhost:1234/v1
+  deepseek:
+    api_key_env: DEEPSEEK_API_KEY
+
+roles:
+  fast:
+    primary: anthropic/claude-haiku-4-5
+    fallback:
+      - ollama/qwen2.5:3b
+  default:
+    primary: anthropic/claude-sonnet-4-6
+    fallback:
+      - openai/gpt-4o
+      - deepseek/deepseek-chat
+  heavy:
+    primary: anthropic/claude-opus-4-6
+    fallback:
+      - anthropic/claude-sonnet-4-6
 
 security:
   proxy:

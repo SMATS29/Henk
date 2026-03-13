@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.theme import Theme
 
 from henk.config import load_config
+from henk.router import ModelRole, ModelRouter
 from henk.memory import ChangeType, MemoryRetrieval, MemoryStore, Provenance, RelevanceScorer, StagedChange, StagingManager
 
 app = typer.Typer(help="Henk - Persoonlijke AI Orchestrator")
@@ -145,8 +146,67 @@ def status():
 
     console.print("Gateway:     actief (embedded in CLI)")
     console.print(f"Kill switch: {state}")
+    config = load_config(data_dir)
+    router = ModelRouter(config)
+    try:
+        default_provider = router.get_provider(ModelRole.DEFAULT)
+        fallback = ", ".join(router.describe_role_chain(ModelRole.DEFAULT)[1:]) or "geen"
+        console.print(f"Provider:    {router.provider_label(default_provider)} (DEFAULT)")
+        console.print(f"Fallback:    {fallback}")
+    except RuntimeError:
+        console.print("Provider:    geen provider beschikbaar")
+        console.print("Fallback:    geen")
     console.print(f"Workspace:   {workspace} ({file_count} bestanden)")
     console.print(f"Laatste log: {latest_log}")
+
+
+@app.command()
+def config(
+    show: bool = typer.Option(False, "--show", help="Toon huidige configuratie"),
+    set_limit: str | None = typer.Option(None, "--set", help="Stel limiet in, bijv. 'max_tool_calls=8'"),
+):
+    """Bekijk of wijzig Henk's configuratie."""
+    data_dir = _get_data_dir()
+    cfg = load_config(data_dir)
+
+    if set_limit:
+        key, _, value = set_limit.partition("=")
+        if not key or not value:
+            raise typer.BadParameter("Gebruik formaat key=value")
+        valid_keys = {"max_tool_calls", "max_retries_content", "max_retries_technical"}
+        if key not in valid_keys:
+            raise typer.BadParameter(f"Onbekende limiet '{key}'")
+        try:
+            parsed = int(value)
+        except ValueError as exc:
+            raise typer.BadParameter("Waarde moet een integer zijn") from exc
+
+        import yaml
+
+        config_path = data_dir / "henk.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        content = {}
+        if config_path.exists():
+            content = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        content.setdefault("security", {}).setdefault("react_loop", {})[key] = parsed
+        config_path.write_text(yaml.safe_dump(content, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        console.print(f"{key} ingesteld op {parsed}")
+        return
+
+    if show or not set_limit:
+        router = ModelRouter(cfg)
+        console.print("[bold]Rollen:[/bold]")
+        for role in ModelRole:
+            try:
+                provider = router.get_provider(role)
+                console.print(f"  {role.value}: {router.provider_label(provider)}")
+            except RuntimeError:
+                console.print(f"  {role.value}: [red]geen provider beschikbaar[/red]")
+
+        console.print("\n[bold]Limieten:[/bold]")
+        console.print(f"  max_tool_calls: {cfg.max_tool_calls}")
+        console.print(f"  max_retries_content: {cfg.max_retries_content}")
+        console.print(f"  max_retries_technical: {cfg.max_retries_technical}")
 
 
 @app.command()
@@ -216,13 +276,6 @@ def chat():
 
     if _control_path("graceful_stop").exists() and _control_path("graceful_stop").read_text(encoding="utf-8").strip().lower() == "true":
         console.print("[yellow]Henk staat op pauze. Nieuwe taken worden geweigerd.[/yellow]")
-
-    if not config.api_key:
-        console.print(
-            f"[red]{config.api_key_env_var} niet gevonden.[/red]\n"
-            "Maak een .env bestand aan met je API key. Zie .env.example."
-        )
-        raise typer.Exit(code=1)
 
     from henk.brain import Brain
     from henk.gateway import Gateway, KillSwitchActive

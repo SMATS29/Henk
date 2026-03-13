@@ -55,8 +55,9 @@ def test_init_creates_files(tmp_path, monkeypatch):
     config_path = data_dir / "henk.yaml"
     assert config_path.exists()
     config_text = config_path.read_text(encoding="utf-8")
-    assert "default: anthropic" in config_text
-    assert "model: claude-sonnet-4-6" in config_text
+    assert "providers:" in config_text
+    assert "roles:" in config_text
+    assert "primary: anthropic/claude-sonnet-4-6" in config_text
 
 
 def test_init_existing_no_overwrite(tmp_path, monkeypatch):
