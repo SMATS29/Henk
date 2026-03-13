@@ -9,6 +9,8 @@ def test_default_config_has_required_fields():
     assert "default" in config.roles_config
     assert config.max_tool_calls == 4
     assert config.memory_vector_enabled is True
+    assert config.skills_enabled is True
+    assert config.heartbeat_interval == 30
 
 
 def test_deep_merge():

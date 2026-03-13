@@ -6,7 +6,9 @@ from typing import Any
 
 from henk.config import Config
 from henk.memory.retrieval import MemoryRetrieval
+from henk.requirements import Requirements
 from henk.router import ModelRole, ModelRouter
+from henk.skills.selector import SkillSelector
 
 
 SYSTEM_PROMPT = """\
@@ -60,11 +62,22 @@ class Brain:
         config: Config,
         router: ModelRouter | None = None,
         memory_retrieval: MemoryRetrieval | None = None,
+        skill_selector: SkillSelector | None = None,
     ):
         self._config = config
         self._router = router or ModelRouter(config)
         self._history: list[dict[str, Any]] = []
         self._memory_retrieval = memory_retrieval
+        self._skill_selector = skill_selector
+        self._active_requirements: Requirements | None = None
+
+    @property
+    def active_requirements(self) -> Requirements | None:
+        return self._active_requirements
+
+    @active_requirements.setter
+    def active_requirements(self, value: Requirements | None) -> None:
+        self._active_requirements = value
 
     @property
     def has_history(self) -> bool:
@@ -89,6 +102,49 @@ class Brain:
             self._history.append({"role": "user", "content": user_message})
             self._history.append({"role": "assistant", "content": answer})
 
+        return answer
+
+    def classify_input(self, user_message: str) -> str:
+        """Classificeer input als taak of gesprek."""
+        provider = self._router.get_provider(ModelRole.FAST)
+        response = provider.chat(
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "Is dit een verzoek om iets te doen (taak) of gewoon een gespreksbericht?\n\n"
+                        f'"{user_message}"\n\nAntwoord met alleen \"taak\" of \"gesprek\".'
+                    ),
+                }
+            ],
+            system="Classificeer berichten. Antwoord alleen met 'taak' of 'gesprek'.",
+        )
+        return "taak" if "taak" in (response.text or "").strip().lower() else "gesprek"
+
+    def refine_requirements(self, user_input: str, requirements: Requirements) -> str:
+        """Verfijn eisen via gesprek."""
+        provider = self._router.get_provider(ModelRole.DEFAULT)
+        system = self._build_system_prompt(user_input)
+        prompt = (
+            f"De gebruiker wil: {requirements.task_description}\n"
+            f"Huidige eisen:\n{requirements.specifications or '(nog geen)'}\n"
+            f"Laatste bericht van de gebruiker: {user_input}\n\n"
+            "Analyseer of er genoeg informatie is om te beginnen. "
+            "Als er iets onduidelijk is, stel dan één gerichte vraag. "
+            "Als alles duidelijk is, vat de eisen samen en vraag bevestiging. "
+            "Als de gebruiker bevestigt (ja/akkoord/doe maar), antwoord dan exact met: [CONFIRMED]"
+        )
+
+        response = provider.chat(messages=self._history + [{"role": "user", "content": prompt}], system=system)
+        answer = response.text or ""
+        if "[CONFIRMED]" in answer:
+            requirements.confirm()
+            answer = answer.replace("[CONFIRMED]", "").strip()
+        else:
+            requirements.add_specification(user_input)
+
+        self._history.append({"role": "user", "content": user_input})
+        self._history.append({"role": "assistant", "content": answer})
         return answer
 
     def run_with_tools(self, user_message: str, tool_executor: Any, tools: list[dict[str, Any]] | None = None) -> str:

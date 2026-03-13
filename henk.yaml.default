@@ -70,6 +70,16 @@ tools:
     enabled: true
   code_runner:
     enabled: true
+  reminder:
+    enabled: true
+
+skills:
+  dir: ~/henk/skills
+  enabled: true
+
+heartbeat:
+  enabled: true
+  interval_seconds: 30
 
 memory:
   vector: true
