@@ -2,107 +2,104 @@
 
 from copy import deepcopy
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from henk.brain import Brain, SYSTEM_PROMPT
 from henk.config import Config, DEFAULT_CONFIG
+from henk.router import ModelRole
+from henk.router.providers.base import ProviderResponse, ToolCall
 from henk.tools.base import ToolResult
 
 
-def _make_anthropic_response(text: str):
-    response = MagicMock()
-    block = MagicMock()
-    block.text = text
-    response.content = [block]
-    return response
+class DummyProvider:
+    name = "dummy"
+
+    def __init__(self, responses):
+        self._responses = responses
+        self.calls = []
+
+    def chat(self, messages, system, tools=None, max_tokens=1024):
+        self.calls.append({"messages": messages, "system": system, "tools": tools, "max_tokens": max_tokens})
+        return self._responses.pop(0)
+
+    def supports_tools(self):
+        return True
+
+    def format_assistant_message(self, response):
+        return {"role": "assistant", "content": [{"type": "tool_use", "id": "tool-1"}]}
+
+    def format_tool_result(self, tool_call_id, result):
+        return {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_call_id, "content": result}]}
 
 
-def _make_config(*, provider: str = "anthropic", model: str = "claude-sonnet-4-6") -> Config:
+class DummyRouter:
+    def __init__(self, provider):
+        self.provider = provider
+        self.roles = []
+
+    def get_provider(self, role=ModelRole.DEFAULT, require_tools=False):
+        self.roles.append((role, require_tools))
+        return self.provider
+
+
+def _make_config() -> Config:
     data = deepcopy(DEFAULT_CONFIG)
-    data["provider"]["default"] = provider
-    data["provider"]["model"] = model
     return Config(data)
 
 
-@patch("henk.brain.anthropic.Anthropic")
-def test_brain_uses_system_prompt(mock_anthropic_cls):
-    mock_client = MagicMock()
-    mock_client.messages.create.return_value = _make_anthropic_response("Hoi!")
-    mock_anthropic_cls.return_value = mock_client
-
-    brain = Brain(_make_config())
+def test_brain_uses_system_prompt():
+    provider = DummyProvider([ProviderResponse(text="Hoi!", tool_calls=None, raw=None)])
+    brain = Brain(_make_config(), router=DummyRouter(provider))
     brain.think("hallo")
-
-    call_kwargs = mock_client.messages.create.call_args
-    assert call_kwargs.kwargs["system"] == SYSTEM_PROMPT
+    assert provider.calls[0]["system"] == SYSTEM_PROMPT
 
 
-@patch("henk.brain.anthropic.Anthropic")
-def test_brain_builds_message_history(mock_anthropic_cls):
-    mock_client = MagicMock()
-    mock_client.messages.create.side_effect = [
-        _make_anthropic_response("Antwoord 1"),
-        _make_anthropic_response("Antwoord 2"),
-    ]
-    mock_anthropic_cls.return_value = mock_client
-
-    brain = Brain(_make_config())
+def test_brain_builds_message_history():
+    provider = DummyProvider([
+        ProviderResponse(text="Antwoord 1", tool_calls=None, raw=None),
+        ProviderResponse(text="Antwoord 2", tool_calls=None, raw=None),
+    ])
+    brain = Brain(_make_config(), router=DummyRouter(provider))
     brain.think("bericht 1")
     brain.think("bericht 2")
 
-    messages = mock_client.messages.create.call_args_list[1].kwargs["messages"]
-    assert messages == [
+    assert provider.calls[1]["messages"] == [
         {"role": "user", "content": "bericht 1"},
         {"role": "assistant", "content": "Antwoord 1"},
         {"role": "user", "content": "bericht 2"},
     ]
 
 
-@patch("henk.brain.anthropic.Anthropic")
-def test_brain_greet_not_in_history(mock_anthropic_cls):
-    mock_client = MagicMock()
-    mock_client.messages.create.side_effect = [
-        _make_anthropic_response("Hoi daar!"),
-        _make_anthropic_response("Antwoord"),
-    ]
-    mock_anthropic_cls.return_value = mock_client
-
-    brain = Brain(_make_config())
+def test_brain_greet_not_in_history():
+    provider = DummyProvider([
+        ProviderResponse(text="Hoi daar!", tool_calls=None, raw=None),
+        ProviderResponse(text="Antwoord", tool_calls=None, raw=None),
+    ])
+    brain = Brain(_make_config(), router=DummyRouter(provider))
     brain.greet()
     brain.think("vraag")
-
-    messages = mock_client.messages.create.call_args_list[1].kwargs["messages"]
-    assert messages == [{"role": "user", "content": "vraag"}]
+    assert provider.calls[1]["messages"] == [{"role": "user", "content": "vraag"}]
 
 
-@patch("henk.brain.anthropic.Anthropic")
-def test_brain_appends_memory_context_to_system_prompt(mock_anthropic_cls):
-    mock_client = MagicMock()
-    mock_client.messages.create.return_value = _make_anthropic_response("Hoi!")
-    mock_anthropic_cls.return_value = mock_client
+def test_brain_appends_memory_context_to_system_prompt():
+    provider = DummyProvider([ProviderResponse(text="Hoi!", tool_calls=None, raw=None)])
     retrieval = MagicMock()
-    retrieval.get_context.return_value = "## Geheugen\nProject Henk"
+    retrieval.get_context.return_value = "Project Henk"
 
-    brain = Brain(_make_config(), memory_retrieval=retrieval)
+    brain = Brain(_make_config(), router=DummyRouter(provider), memory_retrieval=retrieval)
     brain.think("status?")
 
-    system_prompt = mock_client.messages.create.call_args.kwargs["system"]
+    system_prompt = provider.calls[0]["system"]
     assert SYSTEM_PROMPT in system_prompt
     assert "Project Henk" in system_prompt
 
 
-@patch("henk.brain.anthropic.Anthropic")
-def test_run_with_tools_keeps_history_and_returns_final_answer(mock_anthropic_cls):
-    mock_client = MagicMock()
-    tool_block = SimpleNamespace(type="tool_use", id="tool-1", name="web_search", input={"query": "test"})
-    final_block = SimpleNamespace(type="text", text="Klaar")
-    mock_client.messages.create.side_effect = [
-        SimpleNamespace(content=[tool_block]),
-        SimpleNamespace(content=[final_block]),
-    ]
-    mock_anthropic_cls.return_value = mock_client
-
-    brain = Brain(_make_config())
+def test_run_with_tools_keeps_history_and_returns_final_answer():
+    provider = DummyProvider([
+        ProviderResponse(text=None, tool_calls=[ToolCall(id="tool-1", name="web_search", parameters={"query": "test"})], raw=None),
+        ProviderResponse(text="Klaar", tool_calls=None, raw=None),
+    ])
+    brain = Brain(_make_config(), router=DummyRouter(provider))
 
     def executor(name: str, params: dict):
         assert name == "web_search"
@@ -110,32 +107,22 @@ def test_run_with_tools_keeps_history_and_returns_final_answer(mock_anthropic_cl
         return ToolResult(success=True, data="zoekresultaat", source_tag="")
 
     out = brain.run_with_tools("zoek iets", executor)
-
     assert out == "Klaar"
     assert brain._history == [
         {"role": "user", "content": "zoek iets"},
         {"role": "assistant", "content": "Klaar"},
     ]
 
-    second_messages = mock_client.messages.create.call_args_list[1].kwargs["messages"]
-    assert second_messages[0] == {"role": "user", "content": "zoek iets"}
-    assert second_messages[1]["role"] == "assistant"
-    assert second_messages[2]["role"] == "user"
 
-
-@patch("henk.brain.anthropic.Anthropic")
-def test_summarize_session_uses_history(mock_anthropic_cls):
-    mock_client = MagicMock()
-    mock_client.messages.create.side_effect = [
-        _make_anthropic_response("Antwoord"),
-        _make_anthropic_response("Samenvatting"),
-    ]
-    mock_anthropic_cls.return_value = mock_client
-
-    brain = Brain(_make_config())
+def test_summarize_session_uses_history():
+    provider = DummyProvider([
+        ProviderResponse(text="Antwoord", tool_calls=None, raw=None),
+        ProviderResponse(text="Samenvatting", tool_calls=None, raw=None),
+    ])
+    brain = Brain(_make_config(), router=DummyRouter(provider))
     brain.think("wat deden we?")
     summary = brain.summarize_session()
 
     assert summary == "Samenvatting"
-    prompt = mock_client.messages.create.call_args.kwargs["messages"][0]["content"]
+    prompt = provider.calls[1]["messages"][0]["content"]
     assert "Gebruiker: wat deden we?" in prompt

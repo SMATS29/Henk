@@ -12,7 +12,24 @@ from dotenv import load_dotenv
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "henk": {"name": "Henk", "language": "nl"},
-    "provider": {"default": "anthropic", "model": "claude-sonnet-4-6"},
+    "providers": {
+        "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
+        "openai": {"api_key_env": "OPENAI_API_KEY"},
+        "ollama": {"base_url": "http://localhost:11434/v1"},
+        "lmstudio": {"base_url": "http://localhost:1234/v1"},
+        "deepseek": {"api_key_env": "DEEPSEEK_API_KEY"},
+    },
+    "roles": {
+        "fast": {"primary": "anthropic/claude-haiku-4-5", "fallback": ["ollama/qwen2.5:3b"]},
+        "default": {
+            "primary": "anthropic/claude-sonnet-4-6",
+            "fallback": ["openai/gpt-4o", "deepseek/deepseek-chat"],
+        },
+        "heavy": {
+            "primary": "anthropic/claude-opus-4-6",
+            "fallback": ["anthropic/claude-sonnet-4-6"],
+        },
+    },
     "security": {
         "proxy": {
             "enabled": True,
@@ -74,30 +91,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 
 class Config:
-    """Henk configuratie."""
-
     def __init__(self, data: dict[str, Any]):
         self._data = data
 
     @property
-    def model(self) -> str:
-        return self._data["provider"]["model"]
+    def providers_config(self) -> dict[str, Any]:
+        return self._data.get("providers", {})
 
     @property
-    def provider(self) -> str:
-        return self._data["provider"]["default"]
-
-    @property
-    def api_key_env_var(self) -> str:
-        """Geef de naam van de env var voor de actieve provider."""
-        key_map = {
-            "anthropic": "ANTHROPIC_API_KEY",
-        }
-        return key_map.get(self.provider, f"{self.provider.upper()}_API_KEY")
-
-    @property
-    def api_key(self) -> str | None:
-        return os.environ.get(self.api_key_env_var)
+    def roles_config(self) -> dict[str, Any]:
+        return self._data.get("roles", {})
 
     @property
     def data_dir(self) -> Path:
@@ -169,7 +172,6 @@ class Config:
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """Merge override into base recursively."""
     result = base.copy()
     for key, value in override.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
@@ -180,7 +182,6 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 
 
 def load_config(data_dir: Path | None = None) -> Config:
-    """Laad configuratie uit .env en henk.yaml."""
     load_dotenv(Path.cwd() / ".env")
     load_dotenv(Path(__file__).parent.parent / ".env")
 
@@ -191,8 +192,8 @@ def load_config(data_dir: Path | None = None) -> Config:
     data = DEFAULT_CONFIG.copy()
 
     if config_path.exists():
-        with open(config_path, encoding="utf-8") as f:
-            file_data = yaml.safe_load(f)
+        with open(config_path, encoding="utf-8") as file_handle:
+            file_data = yaml.safe_load(file_handle)
         if file_data:
             data = _deep_merge(DEFAULT_CONFIG, file_data)
 
