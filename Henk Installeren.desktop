@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Henk Installeren
+Comment=Installeer of update Henk op dit systeem
+Exec=bash -c "cd /home/user/Henk && bash installeer.sh; read -rp 'Druk op Enter om te sluiten...'"
+Path=/home/user/Henk
+Terminal=true
+Icon=system-software-install
+Categories=Utility;
+StartupNotify=false
