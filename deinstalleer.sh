@@ -40,9 +40,41 @@ echo "  Henk wordt nu verwijderd..."
 echo ""
 
 # --------------------------------------------------------------------------
-# Stap 1: Pip pakket verwijderen
+# Stap 1: Actieve processen stoppen
 # --------------------------------------------------------------------------
-echo "[ 1/2 ] Henk pakket verwijderen..."
+echo "[ 1/3 ] Actieve Henk-processen stoppen..."
+
+# Zoek naar draaiende henk-processen (python + henk, of de henk binary)
+if pgrep -f "python.*henk" &>/dev/null || pgrep -f "[/]henk$" &>/dev/null; then
+    echo "  Henk is nog actief. Processen worden gestopt..."
+
+    # Nette afsluiting (geeft het proces kans om op te schonen)
+    pkill -TERM -f "python.*henk" 2>/dev/null || true
+    pkill -TERM -f "[/]henk$"     2>/dev/null || true
+    sleep 2
+
+    # Als processen nog steeds draaien: forceer afsluiting
+    if pgrep -f "python.*henk" &>/dev/null || pgrep -f "[/]henk$" &>/dev/null; then
+        pkill -KILL -f "python.*henk" 2>/dev/null || true
+        pkill -KILL -f "[/]henk$"     2>/dev/null || true
+        sleep 1
+    fi
+
+    if pgrep -f "python.*henk" &>/dev/null || pgrep -f "[/]henk$" &>/dev/null; then
+        echo "  WAARSCHUWING: Sommige processen konden niet gestopt worden."
+        echo "  Sluit open Henk-vensters handmatig en probeer opnieuw."
+    else
+        echo "  Alle processen gestopt. OK"
+    fi
+else
+    echo "  Geen actieve Henk-processen gevonden. OK"
+fi
+echo ""
+
+# --------------------------------------------------------------------------
+# Stap 2: Pip pakket verwijderen
+# --------------------------------------------------------------------------
+echo "[ 2/3 ] Henk pakket verwijderen..."
 
 # Kies het juiste pip commando
 if command -v pip3 &>/dev/null; then
@@ -71,9 +103,9 @@ fi
 echo ""
 
 # --------------------------------------------------------------------------
-# Stap 2: Werkmap verwijderen (herinneringen, logs, instellingen)
+# Stap 3: Werkmap verwijderen (herinneringen, logs, instellingen)
 # --------------------------------------------------------------------------
-echo "[ 2/2 ] Werkmap verwijderen ($HENK_DIR)..."
+echo "[ 3/3 ] Werkmap verwijderen ($HENK_DIR)..."
 
 if [ -d "$HENK_DIR" ]; then
     rm -rf "$HENK_DIR"
