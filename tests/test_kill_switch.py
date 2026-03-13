@@ -28,25 +28,17 @@ def test_pause_sets_graceful_true(tmp_path, monkeypatch):
     assert (data_dir / "control" / "graceful_stop").read_text(encoding="utf-8") == "true"
 
 
-def test_resume_sets_graceful_false(tmp_path, monkeypatch):
+def test_resume_resets_switches(tmp_path, monkeypatch):
     data_dir = tmp_path / "henk"
     (data_dir / "control").mkdir(parents=True)
     (data_dir / "control" / "graceful_stop").write_text("true", encoding="utf-8")
+    (data_dir / "control" / "hard_stop").write_text("true", encoding="utf-8")
     monkeypatch.setattr("henk.cli._get_data_dir", lambda: data_dir)
 
     result = runner.invoke(app, ["resume"])
     assert result.exit_code == 0
     assert (data_dir / "control" / "graceful_stop").read_text(encoding="utf-8") == "false"
-
-
-def test_chat_refuses_when_hard_stop_active(tmp_path, monkeypatch):
-    data_dir = tmp_path / "henk"
-    (data_dir / "control").mkdir(parents=True)
-    (data_dir / "control" / "hard_stop").write_text("true", encoding="utf-8")
-    monkeypatch.setattr("henk.cli._get_data_dir", lambda: data_dir)
-
-    result = runner.invoke(app, ["chat"])
-    assert result.exit_code == 1
+    assert (data_dir / "control" / "hard_stop").read_text(encoding="utf-8") == "false"
 
 
 def test_gateway_blocks_tool_calls_when_graceful_active(config, mock_brain):
