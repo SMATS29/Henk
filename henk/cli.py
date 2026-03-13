@@ -12,6 +12,9 @@ from rich.theme import Theme
 
 from henk.config import load_config
 from henk.router import ModelRole, ModelRouter
+from henk.requirements import Requirements, RequirementsStatus
+from henk.skills import SkillRunner, SkillSelector
+from henk.heartbeat import Heartbeat, ReminderTool
 from henk.memory import ChangeType, MemoryRetrieval, MemoryStore, Provenance, RelevanceScorer, StagedChange, StagingManager
 
 app = typer.Typer(help="Henk - Persoonlijke AI Orchestrator")
@@ -287,18 +290,30 @@ def chat():
     from henk.tools.web_search import WebSearchTool
     from henk.transcript import TranscriptWriter
 
-    store, staging, _, retrieval = _build_memory_services(config)
+    _, staging, _, retrieval = _build_memory_services(config)
     transcript = TranscriptWriter(config.logs_dir)
-    brain = Brain(config, memory_retrieval=retrieval)
+    skill_selector = SkillSelector(config.skills_dir, ModelRouter(config)) if config.skills_enabled else None
+    brain = Brain(config, memory_retrieval=retrieval, skill_selector=skill_selector)
     gateway = Gateway(config, brain, transcript)
     proxy = SecurityProxy(config.proxy_allowed_domains, config.proxy_allowed_methods)
+
+    heartbeat = Heartbeat(interval_seconds=config.heartbeat_interval)
+
+    def on_reminder(message: str):
+        console.print(f"\n[yellow]⏰ Herinnering: {message}[/yellow]\n[bold]Henk > [/bold]", end="")
+
+    if config.heartbeat_enabled:
+        heartbeat.start(on_reminder)
+
     tools = {
         "web_search": WebSearchTool(proxy=proxy, timeout_seconds=config.web_search_timeout_seconds),
-        "file_manager": FileManagerTool([str(p) for p in config.file_manager_read_roots], config.workspace_dir),
+        "file_manager": FileManagerTool([str(path) for path in config.file_manager_read_roots], config.workspace_dir),
         "code_runner": CodeRunnerTool(config.workspace_dir, config.code_runner_timeout_seconds),
         "memory_write": MemoryWriteTool(staging),
+        "reminder": ReminderTool(heartbeat=heartbeat),
     }
     react_loop = ReactLoop(brain=brain, gateway=gateway, tools=tools)
+    skill_runner = SkillRunner(brain, gateway, react_loop)
     gateway.set_react_loop(react_loop)
 
     try:
@@ -321,7 +336,35 @@ def chat():
                 continue
 
             try:
-                response = gateway.process(user_input)
+                if brain.active_requirements and brain.active_requirements.status == RequirementsStatus.CONFIRMED:
+                    requirements = brain.active_requirements
+                    requirements.start_execution()
+                    if requirements.skill_name and skill_selector:
+                        skill = skill_selector.select(requirements.task_description)
+                        if skill:
+                            result = skill_runner.run(skill, requirements)
+                        else:
+                            result = react_loop.run(requirements.task_description)
+                    else:
+                        result = react_loop.run(requirements.task_description + "\n\nEisen:\n" + requirements.specifications)
+                    requirements.complete(result)
+                    brain.active_requirements = None
+                    response = result
+                elif brain.active_requirements:
+                    response = brain.refine_requirements(user_input, brain.active_requirements)
+                else:
+                    kind = brain.classify_input(user_input)
+                    if kind == "taak":
+                        req = Requirements(task_description=user_input)
+                        if skill_selector:
+                            skill = skill_selector.select(user_input)
+                            if skill:
+                                req.skill_name = skill.name
+                        brain.active_requirements = req
+                        response = brain.refine_requirements(user_input, req)
+                    else:
+                        response = gateway.process(user_input)
+
                 if response:
                     console.print(f"[henk]{response}[/henk]\n")
             except KillSwitchActive as error:
@@ -335,6 +378,8 @@ def chat():
 
     except KeyboardInterrupt:
         pass
+    finally:
+        heartbeat.stop()
 
     if brain.has_history:
         summary = brain.summarize_session()

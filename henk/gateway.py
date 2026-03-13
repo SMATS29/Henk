@@ -199,3 +199,16 @@ class Gateway:
                 "error": result.error.message if result.error else None,
             }
         )
+
+
+    def log_skill_event(self, event_type: str, skill_name: str, step_number: int, detail: str = "") -> None:
+        """Log een skill-gerelateerd event."""
+        self._transcript.log_event(
+            {
+                "type": f"skill.{event_type}",
+                "session_id": self._transcript.session_id,
+                "skill": skill_name,
+                "step": step_number,
+                "detail": detail,
+            }
+        )

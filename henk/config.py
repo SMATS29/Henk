@@ -66,7 +66,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "web_search": {"enabled": True, "timeout_seconds": 10},
         "file_manager": {"enabled": True},
         "code_runner": {"enabled": True},
+        "reminder": {"enabled": True},
     },
+    "skills": {"dir": "~/henk/skills", "enabled": True},
+    "heartbeat": {"enabled": True, "interval_seconds": 30},
     "memory": {
         "vector": True,
         "relevance_threshold": 0.3,
@@ -165,6 +168,23 @@ class Config:
     @property
     def memory_scoring(self) -> dict[str, int]:
         return dict(self._data["memory"]["scoring"])
+
+
+    @property
+    def skills_dir(self) -> Path:
+        return Path(self._data.get("skills", {}).get("dir", "~/henk/skills")).expanduser()
+
+    @property
+    def skills_enabled(self) -> bool:
+        return bool(self._data.get("skills", {}).get("enabled", True))
+
+    @property
+    def heartbeat_enabled(self) -> bool:
+        return bool(self._data.get("heartbeat", {}).get("enabled", True))
+
+    @property
+    def heartbeat_interval(self) -> int:
+        return int(self._data.get("heartbeat", {}).get("interval_seconds", 30))
 
     @property
     def raw(self) -> dict[str, Any]:
