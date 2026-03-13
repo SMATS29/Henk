@@ -1,54 +1,53 @@
-# Henk v0.5 — Bouwinstructie voor Claude Code
+# Henk CLI UX Overhaul — Bouwinstructie voor Claude Code
 
 ## Context
 
-v0.4 (“Henk Schakelt”) is gebouwd en werkend. Henk heeft CLI chat, tools, security, staged memory, vector search, en model-switching met vijf providers en drie rollen (FAST/DEFAULT/HEAVY).
+Henk is een persoonlijke AI-orchestrator (v0.5). De CLI werkt maar voelt niet als een modern tool. Dit is een UX-upgrade die de CLI verandert naar een ervaring zoals Claude Code of Codex: je typt `henk`, je bent in gesprek, slash-commands voor alles.
 
-Dit is v0.5: **“Henk Leert”**. Het doel is dat Henk complexe taken kan uitvoeren via stapsgewijze skill-documenten, met een Requirements Object dat gesprek en werk verbindt, en een simpele heartbeat voor tijdgetriggerde meldingen.
+## Wat er verandert
 
-Lees `CLAUDE.md` en `docs/henk-design-v14.docx` (hoofdstuk 5: Tools & Skills, hoofdstuk 12: Interactie) voor het volledige ontwerp.
+### Voor deze wijziging
 
-## Wat v0.5 WEL doet
+```
+> henk chat          # Start gesprek
+> henk init          # Initialiseer
+> henk stop          # Stop
+> henk status        # Toon status
+```
 
-- Skill Runner: laadt Markdown skill-documenten en voert ze stap voor stap uit
-- Skill-selectie via samenvattingen en een LLM-call
-- Stap-tracking: houdt bij welke stap actief is, welke afgerond
-- Voortgangsrapportage na elke stap
-- Foutafhandeling per stap
-- Requirements Object als state-machine: draft → confirmed → executing → evaluated
-- Requirements worden verfijnd via gesprek voordat uitvoering start
-- Simpele heartbeat: timer tijdens `henk chat` sessie voor geplande meldingen
-- Skill-samenvattingen verbeterbaar via de memory review cyclus
+### Na deze wijziging
 
-## Wat v0.5 NIET doet
+```
+> henk               # Start gesprek (auto-init bij eerste keer)
+> /stop              # In de chat: hard stop
+> /status            # In de chat: toon status
+> /help              # In de chat: toon alle commands
+> /exit              # In de chat: sluit af
 
-- Geen sub-skill aanroepen (een stap die een andere skill start)
-- Geen Dual-Thread model (gesprek en werk lopen synchroon, niet parallel)
-- Geen daemon — heartbeat werkt alleen tijdens actieve `henk chat` sessie
-- Geen Tauri desktop app
+> henk stop          # Vanuit terminal (zonder Henk te openen)
+> henk status        # Vanuit terminal
+```
+
+## Nieuwe dependency
+
+Voeg `prompt_toolkit` toe aan pyproject.toml:
+
+```toml
+dependencies = [
+    # ... bestaande ...
+    "prompt_toolkit>=3.0.0",
+]
+```
+
+`prompt_toolkit` vervangt Rich’s `console.input()` voor de REPL-input. Rich blijft voor output-formatting.
 
 ## Nieuwe bestanden
 
 ```
 henk/
 ├── henk/
-│   ├── skills/                     # Skill subsysteem
-│   │   ├── __init__.py
-│   │   ├── runner.py               # SkillRunner: stapsgewijze uitvoering
-│   │   ├── selector.py             # SkillSelector: kiest juiste skill via LLM
-│   │   ├── parser.py               # SkillParser: parsed Markdown skill-documenten
-│   │   └── models.py               # Dataclasses: Skill, SkillStep, SkillRun
-│   ├── requirements.py             # Requirements Object state-machine
-│   ├── heartbeat.py                # Simpele timer voor geplande meldingen
-├── skills/                         # Voorbeeld skill-documenten (in repo)
-│   └── voorbeelden/
-│       └── schrijf-samenvatting.md # Voorbeeld skill
-├── tests/
-│   ├── test_skill_runner.py
-│   ├── test_skill_selector.py
-│   ├── test_skill_parser.py
-│   ├── test_requirements.py
-│   └── test_heartbeat.py
+│   ├── repl.py                 # REPL: input loop met prompt_toolkit
+│   ├── commands.py             # Slash-command definities en handlers
 ```
 
 ## Gewijzigde bestanden
@@ -56,838 +55,707 @@ henk/
 ```
 henk/
 ├── henk/
-│   ├── cli.py                      # Skill-integratie in chat, heartbeat starten
-│   ├── brain.py                    # Skill-selectie en stap-uitvoering via LLM
-│   ├── gateway.py                  # Skill-events loggen, Requirements Object beheren
-│   ├── react_loop.py               # Integratie met Skill Runner
-│   └── config.py                   # Skill en heartbeat configuratie
-├── henk.yaml.default               # Skill en heartbeat settings
-├── pyproject.toml                  # Versie update
+│   ├── cli.py                  # Vereenvoudigd: henk = chat, subcommands behouden
 ```
 
-## Skills op schijf
+## cli.py — Nieuwe structuur
 
-Skills zijn Markdown-documenten die de gebruiker schrijft en in `~/henk/skills/` plaatst. Henk schrijft nooit zelf skills — hij kan wel via de memory review cyclus voorstellen doen om samenvattingen te verbeteren.
-
-```
-~/henk/skills/
-├── schrijf-blogpost.md
-├── code-review.md
-├── vergelijk-opties.md
-└── ...
-```
-
-### Skill-formaat
-
-Een skill is een Markdown-bestand met een vaste structuur:
-
-```markdown
----
-name: schrijf-blogpost
-summary: >
-  Schrijf een blogpost over een opgegeven onderwerp. Zoekt bronnen,
-  maakt een outline, schrijft een draft en levert het eindresultaat.
-tags: [schrijven, content]
-tools_required: [web_search, file_manager]
----
-
-# Schrijf Blogpost
-
-## Stap 1: Onderwerp en publiek bepalen
-Bepaal het exacte onderwerp en doelpubliek. Als dit niet duidelijk is
-uit de opdracht, vraag de gebruiker om verduidelijking.
-
-**Actie:** Vat het onderwerp en publiek samen in één alinea.
-**Output:** Opgeslagen als requirements.
-
-## Stap 2: Bronnen zoeken
-Zoek 3-5 relevante bronnen over het onderwerp via web_search.
-
-**Actie:** Gebruik web_search voor elke bron.
-**Output:** Lijst van bronnen met korte samenvatting per bron.
-
-## Stap 3: Outline schrijven
-Maak een outline met 4-6 secties op basis van de bronnen.
-
-**Actie:** Schrijf de outline.
-**Output:** Markdown outline opgeslagen via file_manager.
-
-## Stap 4: Eerste draft
-Schrijf de volledige blogpost op basis van de outline en bronnen.
-
-**Actie:** Schrijf de blogpost.
-**Output:** Volledige blogpost opgeslagen via file_manager.
-
-## Stap 5: Review en oplevering
-Controleer de blogpost op volledigheid en kwaliteit.
-Presenteer het eindresultaat aan de gebruiker.
-
-**Actie:** Review en lever op.
-**Output:** Eindresultaat gepresenteerd.
-```
-
-Elke stap heeft:
-
-- Een titel (## Stap N: …)
-- Instructietekst (wat Henk moet doen)
-- Een **Actie:** regel (de concrete handeling)
-- Een **Output:** regel (wat het resultaat is)
-
-## Datamodellen (skills/models.py)
+De Typer app wordt vereenvoudigd. `henk` zonder argument start de REPL. Een paar subcommands blijven beschikbaar voor gebruik buiten de REPL.
 
 ```python
-from dataclasses import dataclass, field
-from datetime import datetime
-from enum import Enum
-from typing import Any
+"""CLI entrypoint voor Henk."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import typer
+from rich.console import Console
+
+from henk.config import load_config
+
+app = typer.Typer(
+    help="Henk — Persoonlijke AI Orchestrator",
+    invoke_without_command=True,    # henk zonder argument triggert callback
+)
+console = Console()
 
 
-class StepStatus(str, Enum):
-    """Status van een skill-stap."""
-    PENDING = "pending"
-    ACTIVE = "active"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    SKIPPED = "skipped"
+def _get_data_dir() -> Path:
+    return Path.home() / "henk"
 
 
-@dataclass
-class SkillStep:
-    """Een enkele stap in een skill."""
-    number: int                         # Stapnummer (1-indexed)
-    title: str                          # Staptitel
-    instruction: str                    # Volledige instructietekst
-    action: str                         # De concrete actie
-    expected_output: str                # Wat het resultaat moet zijn
-    status: StepStatus = StepStatus.PENDING
-    result: str | None = None           # Resultaat na uitvoering
-    error: str | None = None            # Foutmelding bij failure
+def _ensure_initialized() -> Path:
+    """Zorg dat Henk is geïnitialiseerd. Auto-init bij eerste keer."""
+    data_dir = _get_data_dir()
+    if not data_dir.exists():
+        console.print("[dim]Eerste keer? Henk initialiseert zichzelf...[/dim]\n")
+        _do_init(data_dir)
+    return data_dir
 
 
-@dataclass
-class Skill:
-    """Een geparsed skill-document."""
-    name: str                           # Skill naam uit frontmatter
-    summary: str                        # Samenvatting voor selectie
-    tags: list[str]                     # Tags voor filtering
-    tools_required: list[str]           # Benodigde tools
-    steps: list[SkillStep]             # Alle stappen
-    source_path: str                    # Pad naar het Markdown-bestand
+def _do_init(data_dir: Path) -> None:
+    """Voer de initialisatie uit (gedeelde logica)."""
+    import shutil
+
+    dirs = [
+        data_dir / "memory" / "active",
+        data_dir / "memory" / "episodes",
+        data_dir / "memory" / ".staged" / "pending",
+        data_dir / "memory" / ".staged" / "archive",
+        data_dir / "workspace",
+        data_dir / "skills",
+        data_dir / "control",
+        data_dir / "tools" / "user",
+        data_dir / "tools" / "generated",
+        data_dir / "tools" / "external",
+        data_dir / "logs",
+    ]
+    for directory in dirs:
+        directory.mkdir(parents=True, exist_ok=True)
+
+    core_md = data_dir / "memory" / "core.md"
+    if not core_md.exists():
+        core_md.write_text("# Henk — Kerngeheugen\n", encoding="utf-8")
+
+    config_dest = data_dir / "henk.yaml"
+    if not config_dest.exists():
+        default_config = Path(__file__).parent.parent / "henk.yaml.default"
+        if default_config.exists():
+            shutil.copy2(default_config, config_dest)
+
+    for name in ("graceful_stop", "hard_stop"):
+        ctrl = data_dir / "control" / name
+        ctrl.write_text("false", encoding="utf-8")
+
+    console.print("[bold green]Henk is geïnitialiseerd.[/bold green]\n")
 
 
-@dataclass
-class SkillRun:
-    """Een actieve skill-uitvoering."""
-    skill: Skill
-    current_step: int = 0               # Index van actieve stap (0-indexed)
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
+@app.callback(invoke_without_command=True)
+def main(ctx: typer.Context):
+    """Start Henk. Zonder subcommand = open de chat."""
+    if ctx.invoked_subcommand is not None:
+        return  # Een subcommand is aangeroepen, laat dat afhandelen
 
-    @property
-    def is_complete(self) -> bool:
-        return all(s.status in (StepStatus.COMPLETED, StepStatus.SKIPPED) for s in self.skill.steps)
+    # henk zonder argument = start de REPL
+    data_dir = _ensure_initialized()
+    config = load_config(data_dir)
 
-    @property
-    def active_step(self) -> SkillStep | None:
-        if self.current_step < len(self.skill.steps):
-            return self.skill.steps[self.current_step]
-        return None
-
-    def advance(self) -> SkillStep | None:
-        """Ga naar de volgende stap. Return de nieuwe actieve stap of None als klaar."""
-        self.current_step += 1
-        return self.active_step
-```
-
-## SkillParser (skills/parser.py)
-
-Parsed een Markdown skill-document naar een `Skill` object.
-
-```python
-class SkillParser:
-    """Parsed Markdown skill-documenten."""
-
-    def parse(self, file_path: Path) -> Skill:
-        """Laad en parse een skill-bestand.
-
-        Verwacht:
-        - YAML frontmatter met name, summary, tags, tools_required
-        - Stappen als ## Stap N: Titel
-        - Per stap: instructietekst, **Actie:** regel, **Output:** regel
-        """
-```
-
-Gebruik `python-frontmatter` (al een dependency) voor het parsen van frontmatter. De stappen worden geparsed via regex op `## Stap \d+:` headers.
-
-Wees robuust: als een stap geen **Actie:** of **Output:** regel heeft, gebruik dan de hele instructietekst als actie en laat output leeg.
-
-## SkillSelector (skills/selector.py)
-
-Selecteert de juiste skill voor een taak via een LLM-call.
-
-```python
-class SkillSelector:
-    """Selecteert de juiste skill via samenvattingen."""
-
-    def __init__(self, skills_dir: Path, router: ModelRouter):
-        self._skills_dir = skills_dir
-        self._router = router
-        self._parser = SkillParser()
-
-    def select(self, user_request: str) -> Skill | None:
-        """Selecteer de juiste skill voor een verzoek.
-
-        1. Laad alle skills en hun samenvattingen
-        2. Stuur samenvattingen + het verzoek naar een FAST model
-        3. Model kiest de beste match of zegt 'geen skill nodig'
-        4. Return de gekozen Skill of None
-        """
-        skills = self._load_all_skills()
-        if not skills:
-            return None
-
-        summaries = "\n".join(
-            f"- {s.name}: {s.summary}" for s in skills
+    if not config.api_key:
+        console.print(
+            f"[red]{config.api_key_env_var} niet gevonden.[/red]\n"
+            "Maak een .env bestand aan met je API key."
         )
+        raise typer.Exit(code=1)
 
-        provider = self._router.get_provider(ModelRole.FAST)
-        response = provider.chat(
-            messages=[{
-                "role": "user",
-                "content": f"Verzoek: {user_request}\n\nBeschikbare skills:\n{summaries}\n\n"
-                           f"Welke skill past het best? Antwoord met alleen de skill-naam, "
-                           f"of 'geen' als geen skill past."
-            }],
-            system="Je bent een skill-selector. Kies de best passende skill of zeg 'geen'.",
-        )
+    from henk.repl import start_repl
+    start_repl(config, console)
 
-        chosen_name = response.text.strip().lower()
-        for skill in skills:
-            if skill.name.lower() == chosen_name:
-                return skill
-        return None
 
-    def _load_all_skills(self) -> list[Skill]:
-        """Laad alle .md bestanden uit de skills directory."""
-        skills = []
-        if not self._skills_dir.exists():
-            return skills
-        for path in self._skills_dir.glob("*.md"):
-            try:
-                skills.append(self._parser.parse(path))
-            except Exception:
-                continue  # Skip ongeldige skills
-        return skills
+@app.command()
+def init():
+    """Initialiseer Henk handmatig."""
+    data_dir = _get_data_dir()
+    if data_dir.exists():
+        overwrite = typer.confirm(f"{data_dir} bestaat al. Opnieuw initialiseren?", default=False)
+        if not overwrite:
+            raise typer.Exit()
+    _do_init(data_dir)
+
+
+@app.command()
+def stop(clear: bool = typer.Option(False, "--clear", help="Wis workspace na stop")):
+    """Hard stop vanuit terminal."""
+    data_dir = _get_data_dir()
+    (data_dir / "control" / "hard_stop").write_text("true", encoding="utf-8")
+    if clear:
+        import shutil
+        workspace = data_dir / "workspace"
+        if workspace.exists():
+            for item in workspace.iterdir():
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink(missing_ok=True)
+        console.print("Henk is gestopt. Werkbestanden gewist.")
+    else:
+        console.print("Henk is gestopt.")
+
+
+@app.command()
+def status():
+    """Toon status vanuit terminal."""
+    from henk.commands import handle_status
+    data_dir = _get_data_dir()
+    config = load_config(data_dir)
+    handle_status(config, console)
 ```
 
-## SkillRunner (skills/runner.py)
+## commands.py — Slash-command handlers
 
-Voert een skill stap voor stap uit.
-
-```python
-class SkillRunner:
-    """Voert skills stapsgewijs uit."""
-
-    def __init__(self, brain, gateway, react_loop):
-        self._brain = brain
-        self._gateway = gateway
-        self._react_loop = react_loop
-
-    def run(self, skill: Skill, requirements: 'Requirements') -> str:
-        """Voer een complete skill uit.
-
-        Voor elke stap:
-        1. Laad alleen de actieve stap in context (niet de hele skill)
-        2. Stuur de stap-instructie + requirements naar de Brain
-        3. Brain voert uit (mogelijk met tool-calls via ReactLoop)
-        4. Registreer resultaat
-        5. Rapporteer voortgang
-        6. Ga naar volgende stap
-
-        Returns: eindresultaat als tekst
-        """
-        skill_run = SkillRun(skill=skill, started_at=datetime.now())
-        results = []
-
-        while skill_run.active_step is not None:
-            step = skill_run.active_step
-            step.status = StepStatus.ACTIVE
-
-            # Log voortgang
-            self._gateway.log_skill_event("step.started", skill.name, step.number, step.title)
-
-            try:
-                # Bouw de prompt voor deze stap
-                step_prompt = self._build_step_prompt(step, requirements, results)
-
-                # Voer de stap uit via de ReAct-loop (zodat tools beschikbaar zijn)
-                result = self._react_loop.run(step_prompt)
-
-                step.status = StepStatus.COMPLETED
-                step.result = result
-                results.append(f"Stap {step.number} ({step.title}): {result}")
-
-                self._gateway.log_skill_event("step.completed", skill.name, step.number, step.title)
-
-            except Exception as e:
-                step.status = StepStatus.FAILED
-                step.error = str(e)
-                self._gateway.log_skill_event("step.failed", skill.name, step.number, str(e))
-
-                # Rapporteer fout aan gebruiker en stop
-                return f"Stap {step.number} ({step.title}) is mislukt: {e}\n\nEerdere resultaten:\n" + "\n".join(results)
-
-            skill_run.advance()
-
-        skill_run.completed_at = datetime.now()
-        return results[-1] if results else "Skill afgerond zonder resultaat."
-
-    def _build_step_prompt(self, step: SkillStep, requirements: 'Requirements', previous_results: list[str]) -> str:
-        """Bouw de prompt voor één stap.
-
-        Bevat:
-        - De stap-instructie
-        - De eisen uit het Requirements Object
-        - Samenvattingen van eerdere stappen (niet de volledige output)
-        """
-        parts = [
-            f"## Actieve stap: {step.title}",
-            f"\n{step.instruction}",
-            f"\n**Actie:** {step.action}",
-            f"**Verwachte output:** {step.expected_output}",
-        ]
-
-        if requirements.specifications:
-            parts.append(f"\n## Eisen\n{requirements.specifications}")
-
-        if previous_results:
-            parts.append("\n## Eerdere stappen")
-            for r in previous_results[-3:]:  # Alleen laatste 3 voor context-beperking
-                parts.append(f"- {r[:200]}")
-
-        return "\n".join(parts)
-```
-
-## Requirements Object (requirements.py)
-
-De state-machine die gesprek en werk verbindt.
+Alle slash-command logica op één plek. Zowel de REPL als cli.py gebruiken dezelfde handlers.
 
 ```python
-from dataclasses import dataclass, field
-from datetime import datetime
-from enum import Enum
+"""Slash-command definities en handlers."""
 
+from __future__ import annotations
 
-class RequirementsStatus(str, Enum):
-    """Status van het Requirements Object."""
-    DRAFT = "draft"                 # Eisen worden bepaald via gesprek
-    CONFIRMED = "confirmed"         # Gebruiker heeft eisen bevestigd
-    EXECUTING = "executing"         # Skill Runner is bezig
-    EVALUATED = "evaluated"         # Klaar — resultaat beschikbaar of open eisen
-
-
-@dataclass
-class Requirements:
-    """Het Requirements Object: verbindt gesprek en werk."""
-
-    task_description: str               # Wat de gebruiker wil
-    specifications: str = ""            # Verzamelde eisen (Markdown)
-    status: RequirementsStatus = RequirementsStatus.DRAFT
-    skill_name: str | None = None       # Gekoppelde skill (als gevonden)
-    created_at: datetime = field(default_factory=datetime.now)
-    confirmed_at: datetime | None = None
-    completed_at: datetime | None = None
-    result: str | None = None           # Eindresultaat
-
-    def add_specification(self, spec: str) -> None:
-        """Voeg een eis toe of update bestaande eisen."""
-        if self.status not in (RequirementsStatus.DRAFT, RequirementsStatus.CONFIRMED):
-            return  # Geen eisen wijzigen tijdens uitvoering
-        self.specifications += f"\n- {spec}" if self.specifications else f"- {spec}"
-
-    def confirm(self) -> None:
-        """Bevestig de eisen — klaar voor uitvoering."""
-        self.status = RequirementsStatus.CONFIRMED
-        self.confirmed_at = datetime.now()
-
-    def start_execution(self) -> None:
-        """Markeer als in uitvoering."""
-        self.status = RequirementsStatus.EXECUTING
-
-    def complete(self, result: str) -> None:
-        """Markeer als afgerond met resultaat."""
-        self.status = RequirementsStatus.EVALUATED
-        self.completed_at = datetime.now()
-        self.result = result
-
-    def fail(self, reason: str) -> None:
-        """Markeer als mislukt."""
-        self.status = RequirementsStatus.EVALUATED
-        self.completed_at = datetime.now()
-        self.result = f"Mislukt: {reason}"
-```
-
-### Hoe de Requirements flow werkt
-
-1. **Gebruiker zegt iets dat een taak impliceert** — bijv. “Schrijf een blogpost over AI security”
-1. **Brain detecteert dat dit een taak is** — maakt Requirements Object aan (status: DRAFT)
-1. **Brain kiest een skill** (als beschikbaar) via SkillSelector
-1. **Brain stelt verduidelijkingsvragen** — “Technisch of algemeen publiek?” “Hoeveel woorden?”
-1. **Gebruiker antwoordt** — Brain voegt specificaties toe aan Requirements
-1. **Brain vraagt bevestiging** — “Ik ga een blogpost schrijven over AI security, ~1000 woorden, technisch publiek. Akkoord?”
-1. **Gebruiker bevestigt** — Requirements status → CONFIRMED
-1. **Skill Runner start** — status → EXECUTING, voert stappen uit
-1. **Skill Runner klaar** — status → EVALUATED, resultaat wordt gepresenteerd
-
-De Brain beslist wanneer er genoeg informatie is om te bevestigen. Als er geen skill beschikbaar is, voert de Brain de taak uit via de reguliere ReAct-loop zonder Skill Runner.
-
-## Brain wijzigingen (brain.py)
-
-### Taakdetectie en requirements-flow
-
-De Brain moet onderscheid maken tussen:
-
-- **Gesprek** — gewoon chatten, geen taak
-- **Taak** — iets dat uitvoering vereist
-
-Voeg een methode toe die dit classificeert:
-
-```python
-def classify_input(self, user_message: str) -> str:
-    """Classificeer input als 'gesprek' of 'taak'.
-
-    Gebruikt het FAST model voor snelle classificatie.
-    """
-    provider = self._router.get_provider(ModelRole.FAST)
-    response = provider.chat(
-        messages=[{
-            "role": "user",
-            "content": f"Is dit een verzoek om iets te doen (taak) of gewoon een gespreksbericht?\n\n"
-                       f"\"{user_message}\"\n\nAntwoord met alleen 'taak' of 'gesprek'."
-        }],
-        system="Classificeer berichten. Antwoord alleen met 'taak' of 'gesprek'.",
-    )
-    return "taak" if "taak" in response.text.strip().lower() else "gesprek"
-```
-
-### Skill-integratie
-
-```python
-class Brain:
-    def __init__(self, config, router, memory_retrieval=None, skill_selector=None):
-        # ... bestaande init ...
-        self._skill_selector = skill_selector
-        self._active_requirements: Requirements | None = None
-```
-
-## Heartbeat (heartbeat.py)
-
-Simpele timer die tijdens een `henk chat` sessie draait.
-
-```python
-import threading
 from dataclasses import dataclass
-from datetime import datetime
+from typing import Callable
+
+from rich.console import Console
+
+from henk.config import Config
 
 
 @dataclass
-class ScheduledReminder:
-    """Een geplande herinnering."""
-    id: str
-    message: str
-    trigger_at: datetime
-    triggered: bool = False
+class SlashCommand:
+    """Definitie van een slash-command."""
+    name: str               # Zonder slash, bijv. "stop"
+    description: str        # Korte beschrijving voor /help en autocomplete
+    handler: str            # Naam van de handler-functie
 
 
-class Heartbeat:
-    """Simpele timer voor geplande meldingen.
+# Alle beschikbare commands
+COMMANDS: list[SlashCommand] = [
+    SlashCommand("stop", "Hard stop — alles stopt direct", "handle_stop"),
+    SlashCommand("pause", "Pauzeer — geen nieuwe taken", "handle_pause"),
+    SlashCommand("resume", "Hervat na pause of stop", "handle_resume"),
+    SlashCommand("status", "Toon status van Henk", "handle_status"),
+    SlashCommand("review", "Dagelijkse memory review", "handle_review"),
+    SlashCommand("config", "Bekijk configuratie", "handle_config"),
+    SlashCommand("help", "Toon beschikbare commands", "handle_help"),
+    SlashCommand("exit", "Sluit Henk af", "handle_exit"),
+    SlashCommand("clear", "Wis het scherm", "handle_clear"),
+    SlashCommand("history", "Toon gespreksgeschiedenis", "handle_history"),
+]
 
-    Draait alleen tijdens een actieve henk chat sessie.
-    Controleert elke 30 seconden of er herinneringen moeten worden getriggerd.
-    """
 
-    def __init__(self, interval_seconds: int = 30):
-        self._interval = interval_seconds
-        self._reminders: list[ScheduledReminder] = []
-        self._timer: threading.Timer | None = None
-        self._running = False
-        self._callback = None  # Wordt gezet door cli.py
+def get_command_names() -> list[str]:
+    """Alle command-namen voor autocomplete."""
+    return [f"/{cmd.name}" for cmd in COMMANDS]
 
-    def start(self, callback) -> None:
-        """Start de heartbeat. Callback wordt aangeroepen met een reminder message."""
-        self._callback = callback
-        self._running = True
-        self._tick()
 
-    def stop(self) -> None:
-        """Stop de heartbeat."""
-        self._running = False
-        if self._timer:
-            self._timer.cancel()
+def handle_stop(config: Config, console: Console, **kwargs) -> str | None:
+    """Hard stop."""
+    control = config.control_dir
+    (control / "hard_stop").write_text("true", encoding="utf-8")
+    console.print("[red]Henk is gestopt.[/red]")
+    return "exit"  # Signaal om de REPL te verlaten
 
-    def add_reminder(self, reminder: ScheduledReminder) -> None:
-        """Plan een herinnering."""
-        self._reminders.append(reminder)
 
-    def _tick(self) -> None:
-        """Check of er herinneringen moeten worden getriggerd."""
-        if not self._running:
-            return
+def handle_pause(config: Config, console: Console, **kwargs) -> str | None:
+    """Graceful stop."""
+    control = config.control_dir
+    (control / "graceful_stop").write_text("true", encoding="utf-8")
+    console.print("[yellow]Henk is gepauzeerd. Geen nieuwe taken.[/yellow]")
+    return None
 
-        now = datetime.now()
-        for reminder in self._reminders:
-            if not reminder.triggered and reminder.trigger_at <= now:
-                reminder.triggered = True
-                if self._callback:
-                    self._callback(reminder.message)
 
-        # Verwijder getriggerde herinneringen
-        self._reminders = [r for r in self._reminders if not r.triggered]
+def handle_resume(config: Config, console: Console, **kwargs) -> str | None:
+    """Hervat na pause of stop."""
+    control = config.control_dir
+    (control / "graceful_stop").write_text("false", encoding="utf-8")
+    (control / "hard_stop").write_text("false", encoding="utf-8")
+    console.print("[green]Henk is hervat.[/green]")
+    return None
 
-        # Plan volgende tick
-        self._timer = threading.Timer(self._interval, self._tick)
-        self._timer.daemon = True  # Stop als hoofdthread stopt
-        self._timer.start()
 
-    @property
-    def pending_count(self) -> int:
-        return len([r for r in self._reminders if not r.triggered])
-```
+def handle_status(config: Config, console: Console, **kwargs) -> str | None:
+    """Toon status."""
+    hard = _read_switch(config, "hard_stop")
+    graceful = _read_switch(config, "graceful_stop")
 
-### Herinnering-tool
+    if hard:
+        state = "[red]gestopt[/red]"
+    elif graceful:
+        state = "[yellow]gepauzeerd[/yellow]"
+    else:
+        state = "[green]normaal[/green]"
 
-Voeg een `reminder` tool toe zodat Henk zelf herinneringen kan plannen:
+    workspace = config.workspace_dir
+    file_count = sum(1 for _ in workspace.rglob("*")) if workspace.exists() else 0
 
-```python
-class ReminderTool(BaseTool):
-    """Plan een herinnering voor later in de sessie."""
+    logs_dir = config.logs_dir
+    latest_log = "geen"
+    if logs_dir.exists():
+        logs = sorted(logs_dir.glob("transcript_*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if logs:
+            latest_log = str(logs[0].name)
 
-    name = "reminder"
-    description = "Plan een herinnering. Werkt alleen tijdens de huidige chat-sessie."
-    permissions = ["write"]
-    parameters = {
-        "type": "object",
-        "properties": {
-            "message": {"type": "string", "description": "De herinnering"},
-            "minutes": {"type": "integer", "description": "Over hoeveel minuten"},
-        },
-        "required": ["message", "minutes"],
+    console.print(f"  Kill switch:  {state}")
+    console.print(f"  Workspace:    {file_count} bestanden")
+    console.print(f"  Laatste log:  {latest_log}")
+
+    # Toon provider info als router beschikbaar is
+    router = kwargs.get("router")
+    if router:
+        try:
+            from henk.router.router import ModelRole
+            for role in ModelRole:
+                try:
+                    provider = router.get_provider(role)
+                    console.print(f"  {role.value:10s}  {provider.name}/{provider._model}")
+                except Exception:
+                    console.print(f"  {role.value:10s}  [red]niet beschikbaar[/red]")
+        except ImportError:
+            pass
+
+    return None
+
+
+def handle_review(config: Config, console: Console, **kwargs) -> str | None:
+    """Memory review."""
+    # Importeer en voer de bestaande review-logica uit
+    from henk.memory.store import MemoryStore
+    from henk.memory.staging import StagingManager
+    from henk.memory.scoring import RelevanceScorer
+
+    store = MemoryStore(config.memory_dir)
+    staging = StagingManager(config.memory_dir / ".staged", store)
+
+    pending = staging.list_pending()
+    if not pending:
+        console.print("[dim]Geen openstaande geheugenwijzigingen.[/dim]")
+        return None
+
+    console.print(f"\n[bold]{len(pending)} wijziging(en) wachten op review:[/bold]\n")
+
+    import typer
+    for change in pending:
+        if change.suspicious:
+            console.print(f"  [red]⚠ VERDACHT[/red]")
+        console.print(f"  Type:     {change.change_type.value}")
+        console.print(f"  Herkomst: {change.provenance.value}")
+        console.print(f"  Reden:    {change.reason}")
+        console.print(f"  Inhoud:   {change.proposed_content[:200]}...")
+
+        approved = typer.confirm("  Goedkeuren?", default=not change.suspicious)
+        if approved:
+            staging.approve(change.id)
+            console.print("  [green]✓ Goedgekeurd[/green]\n")
+        else:
+            staging.reject(change.id)
+            console.print("  [red]✗ Afgewezen[/red]\n")
+
+    console.print("[dim]Review afgerond.[/dim]")
+    return None
+
+
+def handle_config(config: Config, console: Console, **kwargs) -> str | None:
+    """Toon configuratie."""
+    console.print(f"  Provider:              {config.provider}")
+    console.print(f"  Model:                 {config.model}")
+    console.print(f"  Max tool-calls:        {config.max_tool_calls}")
+    console.print(f"  Max retries (content): {config.max_retries_content}")
+    console.print(f"  Max retries (tech):    {config.max_retries_technical}")
+    console.print(f"  Data dir:              {config.data_dir}")
+    return None
+
+
+def handle_help(config: Config, console: Console, **kwargs) -> str | None:
+    """Toon beschikbare commands."""
+    console.print("\n[bold]Beschikbare commands:[/bold]\n")
+    for cmd in COMMANDS:
+        console.print(f"  [cyan]/{cmd.name:10s}[/cyan] {cmd.description}")
+    console.print()
+    return None
+
+
+def handle_exit(config: Config, console: Console, **kwargs) -> str | None:
+    """Sluit af."""
+    return "exit"
+
+
+def handle_clear(config: Config, console: Console, **kwargs) -> str | None:
+    """Wis het scherm."""
+    console.clear()
+    return None
+
+
+def handle_history(config: Config, console: Console, **kwargs) -> str | None:
+    """Toon gespreksgeschiedenis."""
+    brain = kwargs.get("brain")
+    if not brain or not brain._history:
+        console.print("[dim]Nog geen gesprek in deze sessie.[/dim]")
+        return None
+
+    console.print("\n[bold]Gespreksgeschiedenis:[/bold]\n")
+    for msg in brain._history:
+        role = msg.get("role", "?")
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            preview = content[:150]
+            if role == "user":
+                console.print(f"  [bold]Jij:[/bold] {preview}")
+            else:
+                console.print(f"  [cyan]Henk:[/cyan] {preview}")
+    console.print()
+    return None
+
+
+def _read_switch(config: Config, name: str) -> bool:
+    path = config.control_dir / name
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip().lower() == "true"
+    return False
+
+
+def dispatch_command(command: str, config: Config, console: Console, **kwargs) -> str | None:
+    """Voer een slash-command uit. Return 'exit' om de REPL te verlaten, None om door te gaan."""
+    cmd_name = command.lstrip("/").strip().split()[0].lower()
+
+    handlers = {
+        "stop": handle_stop,
+        "pause": handle_pause,
+        "resume": handle_resume,
+        "status": handle_status,
+        "review": handle_review,
+        "config": handle_config,
+        "help": handle_help,
+        "exit": handle_exit,
+        "clear": handle_clear,
+        "history": handle_history,
     }
 
-    def __init__(self, heartbeat: Heartbeat):
-        self._heartbeat = heartbeat
+    handler = handlers.get(cmd_name)
+    if handler:
+        return handler(config, console, **kwargs)
 
-    def execute(self, **kwargs) -> ToolResult:
-        from datetime import timedelta
-        reminder = ScheduledReminder(
-            id=uuid.uuid4().hex[:8],
-            message=kwargs["message"],
-            trigger_at=datetime.now() + timedelta(minutes=kwargs["minutes"]),
-        )
-        self._heartbeat.add_reminder(reminder)
-        tagged = tag_output(self.name, f"Herinnering gepland over {kwargs['minutes']} minuten.", external=False)
-        return ToolResult(success=True, data=tagged, source_tag="[TOOL:reminder]")
+    console.print(f"[red]Onbekend command: /{cmd_name}[/red] — typ /help voor opties.")
+    return None
 ```
 
-## CLI wijzigingen (cli.py)
+## repl.py — De REPL met prompt_toolkit
 
-### Skill-integratie in chat-loop
-
-De chat-loop moet nu onderscheid maken tussen gesprek en taken:
+Dit is het hart van de nieuwe UX.
 
 ```python
-# In de chat while-loop:
-while True:
-    user_input = console.input("[bold]Henk > [/bold]")
-    # ... bestaande exit/empty checks ...
+"""Interactieve REPL met prompt_toolkit autocomplete."""
 
-    # Classificeer input
-    input_type = brain.classify_input(user_input)
+from __future__ import annotations
 
-    if input_type == "taak" and not brain._active_requirements:
-        # Nieuwe taak — maak Requirements Object aan
-        requirements = Requirements(task_description=user_input)
+from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.styles import Style
+from rich.console import Console
 
-        # Probeer een skill te selecteren
-        skill = skill_selector.select(user_input) if skill_selector else None
-        if skill:
-            requirements.skill_name = skill.name
-            console.print(f"[dim]Skill gevonden: {skill.name}[/dim]")
+from henk.commands import dispatch_command, get_command_names
+from henk.config import Config
 
-        brain._active_requirements = requirements
 
-        # Laat Brain de eisen verfijnen
-        response = brain.refine_requirements(user_input, requirements)
-        # Brain kan vragen stellen of direct bevestigen
+# Prompt styling
+PROMPT_STYLE = Style.from_dict({
+    "prompt": "bold cyan",
+})
 
-    elif brain._active_requirements and brain._active_requirements.status == RequirementsStatus.DRAFT:
-        # Lopende requirements-verfijning
-        response = brain.refine_requirements(user_input, brain._active_requirements)
 
-    elif brain._active_requirements and brain._active_requirements.status == RequirementsStatus.CONFIRMED:
-        # Eisen bevestigd — start uitvoering
-        requirements = brain._active_requirements
-        requirements.start_execution()
-
-        if requirements.skill_name:
-            skill = skill_selector.select(requirements.task_description)
-            result = skill_runner.run(skill, requirements)
-        else:
-            result = react_loop.run(requirements.task_description + "\n\nEisen:\n" + requirements.specifications)
-
-        requirements.complete(result)
-        brain._active_requirements = None
-        response = result
-
-    else:
-        # Gewoon gesprek
-        response = gateway.process(user_input)
-```
-
-Dit is een vereenvoudigde flow. De Brain’s `refine_requirements()` methode handelt het gesprek af: stelt vragen, voegt specificaties toe, en detecteert wanneer de gebruiker bevestigt (bijv. “ja”, “akkoord”, “ga maar”, “doe maar”).
-
-### Heartbeat integratie
-
-```python
-# Bij het starten van henk chat:
-heartbeat = Heartbeat(interval_seconds=30)
-
-def on_reminder(message: str):
-    console.print(f"\n[yellow]⏰ Herinnering: {message}[/yellow]\n[bold]Henk > [/bold]", end="")
-
-heartbeat.start(on_reminder)
-
-# Bij het afsluiten:
-heartbeat.stop()
-```
-
-### Herinnering-tool toevoegen
-
-```python
-from henk.heartbeat import Heartbeat, ReminderTool
-
-tools["reminder"] = ReminderTool(heartbeat=heartbeat)
-```
-
-## Gateway wijzigingen (gateway.py)
-
-### Skill-events loggen
-
-```python
-def log_skill_event(self, event_type: str, skill_name: str, step_number: int, detail: str = "") -> None:
-    """Log een skill-gerelateerd event."""
-    self._transcript.log_event({
-        "type": f"skill.{event_type}",
-        "session_id": self._transcript.session_id,
-        "skill": skill_name,
-        "step": step_number,
-        "detail": detail,
-    })
-```
-
-## Config wijzigingen
-
-### henk.yaml.default
-
-Voeg toe:
-
-```yaml
-skills:
-  dir: ~/henk/skills
-  enabled: true
-
-heartbeat:
-  enabled: true
-  interval_seconds: 30
-```
-
-### config.py
-
-```python
-@property
-def skills_dir(self) -> Path:
-    return Path(self._data.get("skills", {}).get("dir", "~/henk/skills")).expanduser()
-
-@property
-def skills_enabled(self) -> bool:
-    return bool(self._data.get("skills", {}).get("enabled", True))
-
-@property
-def heartbeat_enabled(self) -> bool:
-    return bool(self._data.get("heartbeat", {}).get("enabled", True))
-
-@property
-def heartbeat_interval(self) -> int:
-    return int(self._data.get("heartbeat", {}).get("interval_seconds", 30))
-```
-
-### pyproject.toml + **init**.py
-
-```toml
-version = "0.5.0"
-```
-
-```python
-__version__ = "0.5.0"
-```
-
-## henk init aanpassen
-
-Voeg toe:
-
-- Maak `~/henk/skills/` aan als die niet bestaat
-
-## Voorbeeld skill: schrijf-samenvatting.md
-
-Plaats in de repo als `skills/voorbeelden/schrijf-samenvatting.md`. De gebruiker kopieert skills naar `~/henk/skills/`.
-
-```markdown
----
-name: schrijf-samenvatting
-summary: >
-  Maak een beknopte samenvatting van een document of tekst.
-  Leest het bronbestand, identificeert de hoofdpunten en
-  schrijft een samenvatting van de gevraagde lengte.
-tags: [schrijven, samenvatting]
-tools_required: [file_manager]
----
-
-# Schrijf Samenvatting
-
-## Stap 1: Bron lezen
-Lees het bronbestand dat de gebruiker wil laten samenvatten.
-
-**Actie:** Gebruik file_manager om het bestand te lezen.
-**Output:** Inhoud van het bronbestand.
-
-## Stap 2: Hoofdpunten identificeren
-Analyseer de tekst en identificeer de 3-5 belangrijkste punten.
-
-**Actie:** Maak een lijst van hoofdpunten.
-**Output:** Genummerde lijst van hoofdpunten.
-
-## Stap 3: Samenvatting schrijven
-Schrijf een samenvatting op basis van de hoofdpunten.
-Respecteer de gewenste lengte uit de eisen.
-
-**Actie:** Schrijf de samenvatting.
-**Output:** Samenvatting opgeslagen via file_manager.
-```
-
-## Brain: refine_requirements methode
-
-```python
-def refine_requirements(self, user_input: str, requirements: Requirements) -> str:
-    """Verfijn eisen via gesprek.
-
-    De Brain:
-    1. Analyseert de taak en wat er nog onduidelijk is
-    2. Stelt maximaal één gerichte vraag (Henk stelt nooit drie vragen tegelijk)
-    3. Voegt antwoorden toe aan requirements.specifications
-    4. Detecteert bevestiging en zet status naar CONFIRMED
-
-    Bevestigingspatronen: 'ja', 'akkoord', 'ga maar', 'doe maar', 'prima', 'start maar'
-    """
-    provider = self._router.get_provider(ModelRole.DEFAULT)
-    system = self._build_system_prompt(user_input)
-
-    # Bouw een prompt die de Brain vraagt om eisen te verfijnen
-    prompt = (
-        f"De gebruiker wil: {requirements.task_description}\n"
-        f"Huidige eisen:\n{requirements.specifications or '(nog geen)'}\n"
-        f"Laatste bericht van de gebruiker: {user_input}\n\n"
-        f"Analyseer of er genoeg informatie is om te beginnen. "
-        f"Als er iets onduidelijk is, stel dan één gerichte vraag. "
-        f"Als alles duidelijk is, vat de eisen samen en vraag bevestiging. "
-        f"Als de gebruiker bevestigt (ja/akkoord/doe maar), antwoord dan exact met: [CONFIRMED]"
+def _build_completer() -> WordCompleter:
+    """Bouw autocomplete voor slash-commands."""
+    return WordCompleter(
+        get_command_names(),
+        sentence=True,          # Match hele input, niet per woord
+        meta_dict={
+            "/stop": "Hard stop — alles stopt direct",
+            "/pause": "Pauzeer — geen nieuwe taken",
+            "/resume": "Hervat na pause of stop",
+            "/status": "Toon status van Henk",
+            "/review": "Dagelijkse memory review",
+            "/config": "Bekijk configuratie",
+            "/help": "Toon beschikbare commands",
+            "/exit": "Sluit Henk af",
+            "/clear": "Wis het scherm",
+            "/history": "Toon gespreksgeschiedenis",
+        },
     )
 
-    response = provider.chat(
-        messages=self._history + [{"role": "user", "content": prompt}],
-        system=system,
+
+def start_repl(config: Config, console: Console) -> None:
+    """Start de interactieve REPL."""
+    # Initialiseer alle componenten (bestaande logica uit cli.py chat)
+    from henk.brain import Brain
+    from henk.gateway import Gateway, KillSwitchActive
+    from henk.react_loop import ReactLoop
+    from henk.transcript import TranscriptWriter
+
+    # Import tool en memory componenten
+    # (pas aan op basis van wat er in de huidige codebase staat)
+    from henk.security.proxy import SecurityProxy
+    from henk.tools.web_search import WebSearchTool
+    from henk.tools.file_manager import FileManagerTool
+    from henk.tools.code_runner import CodeRunnerTool
+
+    # Initialiseer componenten
+    transcript = TranscriptWriter(config.logs_dir)
+
+    # Router (v0.4)
+    try:
+        from henk.router.router import ModelRouter
+        router = ModelRouter(config)
+    except ImportError:
+        router = None
+
+    # Memory (v0.3)
+    try:
+        from henk.memory.store import MemoryStore
+        from henk.memory.staging import StagingManager
+        from henk.memory.retrieval import MemoryRetrieval
+        store = MemoryStore(config.memory_dir)
+        staging = StagingManager(config.memory_dir / ".staged", store)
+        retrieval = MemoryRetrieval(store, config) if config.memory_vector_enabled else None
+    except ImportError:
+        staging = None
+        retrieval = None
+
+    # Brain
+    brain = Brain(config, router=router, memory_retrieval=retrieval)
+    gateway = Gateway(config, brain, transcript)
+
+    # Tools
+    proxy = SecurityProxy(config.proxy_allowed_domains, config.proxy_allowed_methods)
+    tools = {
+        "web_search": WebSearchTool(proxy=proxy, timeout_seconds=config.web_search_timeout_seconds),
+        "file_manager": FileManagerTool([str(p) for p in config.file_manager_read_roots], config.workspace_dir),
+        "code_runner": CodeRunnerTool(config.workspace_dir, config.code_runner_timeout_seconds),
+    }
+
+    # Memory write tool (v0.3)
+    if staging:
+        try:
+            from henk.tools.memory_write import MemoryWriteTool
+            tools["memory_write"] = MemoryWriteTool(staging=staging)
+        except ImportError:
+            pass
+
+    # Reminder tool (v0.5)
+    try:
+        from henk.heartbeat import Heartbeat, ReminderTool
+        heartbeat = Heartbeat(interval_seconds=config.heartbeat_interval)
+
+        def on_reminder(message: str):
+            console.print(f"\n[yellow]⏰ {message}[/yellow]\n")
+
+        heartbeat.start(on_reminder)
+        tools["reminder"] = ReminderTool(heartbeat=heartbeat)
+    except ImportError:
+        heartbeat = None
+
+    # Skill selector (v0.5)
+    try:
+        from henk.skills.selector import SkillSelector
+        from henk.skills.runner import SkillRunner
+        skill_selector = SkillSelector(config.skills_dir, router) if router else None
+        skill_runner = SkillRunner(brain, gateway, None)  # ReactLoop wordt hieronder gezet
+    except ImportError:
+        skill_selector = None
+        skill_runner = None
+
+    react_loop = ReactLoop(brain=brain, gateway=gateway, tools=tools)
+    gateway.set_react_loop(react_loop)
+
+    if skill_runner:
+        skill_runner._react_loop = react_loop
+
+    # Kill switch check
+    hard = config.control_dir / "hard_stop"
+    if hard.exists() and hard.read_text(encoding="utf-8").strip().lower() == "true":
+        console.print("[red]Henk is gestopt. Typ /resume om te hervatten.[/red]")
+
+    # Begroeting
+    try:
+        greeting = gateway.get_greeting()
+        console.print(f"[cyan]{greeting}[/cyan]\n")
+    except Exception:
+        console.print("[cyan]Hoi. Wat kan ik voor je doen?[/cyan]\n")
+
+    # Prompt session met autocomplete
+    session = PromptSession(
+        completer=_build_completer(),
+        style=PROMPT_STYLE,
+        complete_while_typing=False,    # Alleen autocomplete na Tab of bij /
     )
 
-    answer = response.text
+    # Context voor slash-command handlers
+    command_context = {
+        "brain": brain,
+        "router": router,
+        "gateway": gateway,
+        "react_loop": react_loop,
+    }
 
-    if "[CONFIRMED]" in answer:
-        requirements.confirm()
-        answer = answer.replace("[CONFIRMED]", "").strip()
-    else:
-        # Voeg eventuele nieuwe specificaties toe
-        requirements.add_specification(user_input)
+    # Main loop
+    try:
+        while True:
+            try:
+                user_input = session.prompt(
+                    HTML("<prompt>❯ </prompt>"),
+                    completer=_build_completer(),
+                )
+            except EOFError:
+                break
+            except KeyboardInterrupt:
+                continue  # Ctrl+C in prompt = wis input, niet afsluiten
 
-    self._history.append({"role": "user", "content": user_input})
-    self._history.append({"role": "assistant", "content": answer})
-    return answer
+            stripped = user_input.strip()
+            if not stripped:
+                continue
+
+            # Slash-command?
+            if stripped.startswith("/"):
+                result = dispatch_command(stripped, config, console, **command_context)
+                if result == "exit":
+                    break
+                continue
+
+            # Normaal bericht naar Henk
+            try:
+                response = gateway.process(stripped)
+                if response:
+                    console.print(f"[cyan]{response}[/cyan]\n")
+            except KillSwitchActive as e:
+                console.print(f"[red]Henk is gestopt ({e.switch_type}). Typ /resume om te hervatten.[/red]")
+            except Exception:
+                console.print("[red]Ik kan even niet bij mijn brein. Check je API key of internetverbinding.[/red]\n")
+
+    except KeyboardInterrupt:
+        pass
+
+    # Cleanup
+    if heartbeat:
+        heartbeat.stop()
+
+    # Sessie-samenvatting (v0.5)
+    if staging and brain._history:
+        try:
+            summary = brain.summarize_session()
+            if summary:
+                from henk.memory.models import StagedChange, ChangeType, Provenance
+                from datetime import datetime
+                import uuid
+                change = StagedChange(
+                    id=uuid.uuid4().hex[:8],
+                    change_type=ChangeType.CREATE,
+                    target_item_id=None,
+                    proposed_content=summary,
+                    proposed_description=f"Sessie-samenvatting {datetime.now().strftime('%Y-%m-%d')}",
+                    provenance=Provenance.AGENT_SUGGESTED,
+                    reason="Automatische sessie-samenvatting",
+                    timestamp=datetime.now(),
+                )
+                staging.stage_change(change)
+                console.print("[dim]Sessie-samenvatting opgeslagen in staging.[/dim]")
+        except Exception:
+            pass
+
+    console.print(f"\n[dim]Transcript: {transcript.file_path.name}[/dim]")
+```
+
+## Autocomplete gedrag
+
+De autocomplete moet zo werken:
+
+- Gebruiker typt `/` → dropdown verschijnt met alle commands + beschrijvingen
+- Gebruiker typt `/st` → dropdown filtert naar `/status`, `/stop`
+- Tab of Enter selecteert
+- Gewone tekst (zonder `/`) triggert geen autocomplete
+
+Dit wordt bereikt door `WordCompleter` met `sentence=True` en `meta_dict` voor de beschrijvingen. `complete_while_typing=False` voorkomt dat autocomplete bij normaal typen verschijnt — het triggert alleen bij `/`.
+
+Let op: `complete_while_typing=False` betekent dat de gebruiker Tab moet drukken voor suggesties. Als je wilt dat suggesties automatisch verschijnen zodra `/` wordt getypt, gebruik dan een custom `Completer`:
+
+```python
+from prompt_toolkit.completion import Completer, Completion
+
+class SlashCompleter(Completer):
+    """Autocomplete die alleen triggert bij /."""
+
+    def __init__(self, commands: dict[str, str]):
+        self._commands = commands  # {"/stop": "Hard stop — alles stopt direct", ...}
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        if not text.startswith("/"):
+            return
+
+        for cmd, desc in self._commands.items():
+            if cmd.startswith(text):
+                yield Completion(
+                    cmd,
+                    start_position=-len(text),
+                    display_meta=desc,
+                )
+```
+
+Gebruik deze `SlashCompleter` in plaats van `WordCompleter` als je automatische suggesties wilt bij `/`.
+
+## Prompt-stijl
+
+Het prompt-karakter: `❯` (Unicode right-pointing triangle). Dit is wat moderne CLI tools gebruiken. Als het terminal-compatibiliteitsproblemen geeft op Windows, fallback naar `>`.
+
+```python
+try:
+    # Test of het Unicode karakter werkt
+    "❯".encode(console.encoding or "utf-8")
+    PROMPT_CHAR = "❯"
+except (UnicodeEncodeError, LookupError):
+    PROMPT_CHAR = ">"
+```
+
+## Migratie van bestaande chat-logica
+
+De volledige chat-logica die nu in `cli.py` staat onder het `chat` command verhuist naar `repl.py`. De `chat` command in cli.py kan blijven als alias:
+
+```python
+@app.command(hidden=True)  # Verborgen — henk zonder argument is de primaire manier
+def chat():
+    """Start chat (alias — gebruik gewoon 'henk')."""
+    data_dir = _ensure_initialized()
+    config = load_config(data_dir)
+    from henk.repl import start_repl
+    start_repl(config, console)
 ```
 
 ## Tests
 
-### test_skill_parser.py
+### test_commands.py
 
-- Parsed een geldige skill met frontmatter en stappen
-- Stappen worden correct genummerd
-- Ontbrekende Actie/Output regels worden graceful afgehandeld
-- Ongeldige bestanden geven een duidelijke fout
+- dispatch_command(”/help”, …) print commands
+- dispatch_command(”/exit”, …) returned “exit”
+- dispatch_command(”/stop”, …) schrijft hard_stop en returned “exit”
+- dispatch_command(”/pause”, …) schrijft graceful_stop
+- dispatch_command(”/resume”, …) reset beide switches
+- dispatch_command(”/onbekend”, …) toont foutmelding
+- get_command_names() bevat alle verwachte commands
 
-### test_skill_selector.py
+### test_repl.py
 
-- Selecteert de juiste skill op basis van een verzoek
-- Retourneert None als geen skill past
-- Werkt met lege skills directory
-
-### test_skill_runner.py
-
-- Voert alle stappen van een skill sequentieel uit
-- Stopt bij een gefaalde stap met foutmelding
-- Rapporteert voortgang per stap
-- Eerdere resultaten worden meegestuurd (max 3)
-
-### test_requirements.py
-
-- Status-flow: draft → confirmed → executing → evaluated
-- Specificaties toevoegen werkt in draft en confirmed
-- Specificaties toevoegen wordt genegeerd tijdens executing
-- Complete en fail zetten status naar evaluated
-
-### test_heartbeat.py
-
-- Herinnering triggert na opgegeven tijd
-- Callback wordt aangeroepen bij trigger
-- Stop beëindigt de timer
-- Meerdere herinneringen worden onafhankelijk getrackt
+- Slash-commands worden herkend (begint met /)
+- Lege input wordt genegeerd
+- Niet-slash input wordt doorgegeven aan gateway.process()
+- SlashCompleter geeft alleen suggesties bij /
+- SlashCompleter filtert op getypte tekst
 
 ## Volgorde van bouwen
 
-1. **skills/models.py** — dataclasses
-1. **skills/parser.py** — Markdown skill-parser
-1. **skills/selector.py** — skill-selectie via LLM
-1. **requirements.py** — Requirements Object state-machine
-1. **skills/runner.py** — stapsgewijze uitvoering
-1. **heartbeat.py** — timer + ScheduledReminder + ReminderTool
-1. **brain.py wijzigingen** — classify_input, refine_requirements, skill-integratie
-1. **gateway.py wijzigingen** — skill-events loggen
-1. **react_loop.py wijzigingen** — integratie met skill-stap uitvoering
-1. **cli.py wijzigingen** — taakdetectie, requirements-flow, heartbeat
-1. **config.py + henk.yaml.default** — skill en heartbeat config
-1. **Voorbeeld skill** — schrijf-samenvatting.md
+1. **commands.py** — alle handlers en dispatch logica
+1. **repl.py** — REPL met prompt_toolkit en autocomplete
+1. **cli.py aanpassen** — `invoke_without_command=True`, auto-init, verplaats chat-logica
 1. **Tests**
+1. **Opruimen** — verwijder dubbele logica uit cli.py die nu in commands.py en repl.py zit
 
 ## Samenvatting
 
-v0.5 voegt toe:
+Deze wijziging verandert:
 
-1. Skill Runner: stapsgewijze uitvoering van Markdown skill-documenten
-1. Skill-selectie via samenvattingen en LLM-classificatie
-1. Requirements Object: draft → confirmed → executing → evaluated
-1. Eisen-verfijning via gesprek voordat uitvoering begint
-1. Simpele heartbeat met herinneringen tijdens chat-sessie
-1. Voortgangsrapportage per skill-stap
-1. Voorbeeld skill meegeleverd
-
-**Kernregel: één stap tegelijk in context. Niet de hele skill laden.**
+1. `henk` = start direct de chat (auto-init)
+1. Slash-commands in de chat met autocomplete en beschrijvingen
+1. `henk stop` en `henk status` werken ook vanuit de terminal
+1. prompt_toolkit voor moderne input-ervaring
+1. Alle command-logica gecentreerd in commands.py
+1. REPL-logica in repl.py, cli.py wordt dun
 
 **Referenties:**
 
 - `CLAUDE.md` — architectuurprincipes
-- `docs/henk-design-v14.docx` — hoofdstuk 5.2 (Skills), 5.3 (Skill Runner), 12.2 (Requirements Object)
+- prompt_toolkit documentatie: https://python-prompt-toolkit.readthedocs.io/
