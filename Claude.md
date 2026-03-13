@@ -1,50 +1,54 @@
-# Henk v0.4 — Bouwinstructie voor Claude Code
+# Henk v0.5 — Bouwinstructie voor Claude Code
 
 ## Context
 
-v0.3 (“Henk Onthoudt”) is gebouwd en werkend. Henk heeft CLI chat, tools, security, staged memory met dagelijkse review, vector search en sessie-samenvattingen.
+v0.4 (“Henk Schakelt”) is gebouwd en werkend. Henk heeft CLI chat, tools, security, staged memory, vector search, en model-switching met vijf providers en drie rollen (FAST/DEFAULT/HEAVY).
 
-Dit is v0.4: **“Henk Schakelt”**. Het doel is dat Henk flexibel kan wisselen tussen AI-providers en modellen, met een abstractielaag die de rest van het systeem ontziet.
+Dit is v0.5: **“Henk Leert”**. Het doel is dat Henk complexe taken kan uitvoeren via stapsgewijze skill-documenten, met een Requirements Object dat gesprek en werk verbindt, en een simpele heartbeat voor tijdgetriggerde meldingen.
 
-Lees `CLAUDE.md` en `docs/henk-design-v14.docx` (hoofdstuk 15: Model Router) voor het volledige ontwerp.
+Lees `CLAUDE.md` en `docs/henk-design-v14.docx` (hoofdstuk 5: Tools & Skills, hoofdstuk 12: Interactie) voor het volledige ontwerp.
 
-## Wat v0.4 WEL doet
+## Wat v0.5 WEL doet
 
-- Model Router: abstractielaag tussen Brain en providers
-- Vijf providers: Anthropic, OpenAI, Ollama, LM Studio, DeepSeek
-- Drie rollen: FAST, DEFAULT, HEAVY — elk gekoppeld aan een provider/model
-- Automatisch fallback bij provider-falen
-- Provider-switching via henk.yaml (geen code-aanpassing nodig)
-- Tool-calling abstractie: vertaalt Henk’s tools naar het formaat van elke provider
-- Configureerbare limieten via CLI (henk config)
+- Skill Runner: laadt Markdown skill-documenten en voert ze stap voor stap uit
+- Skill-selectie via samenvattingen en een LLM-call
+- Stap-tracking: houdt bij welke stap actief is, welke afgerond
+- Voortgangsrapportage na elke stap
+- Foutafhandeling per stap
+- Requirements Object als state-machine: draft → confirmed → executing → evaluated
+- Requirements worden verfijnd via gesprek voordat uitvoering start
+- Simpele heartbeat: timer tijdens `henk chat` sessie voor geplande meldingen
+- Skill-samenvattingen verbeterbaar via de memory review cyclus
 
-## Wat v0.4 NIET doet
+## Wat v0.5 NIET doet
 
+- Geen sub-skill aanroepen (een stap die een andere skill start)
+- Geen Dual-Thread model (gesprek en werk lopen synchroon, niet parallel)
+- Geen daemon — heartbeat werkt alleen tijdens actieve `henk chat` sessie
 - Geen Tauri desktop app
-- Geen limieten aanpassen via UI (dat was v0.4 in het originele ontwerp, maar er is geen app)
-- Geen LiteLLM — we bouwen een eigen lichte abstractielaag die precies past bij Henk’s architectuur
 
 ## Nieuwe bestanden
 
 ```
 henk/
 ├── henk/
-│   ├── router/                     # Model Router subsysteem
+│   ├── skills/                     # Skill subsysteem
 │   │   ├── __init__.py
-│   │   ├── router.py               # ModelRouter: rolbepaling + provider-selectie
-│   │   ├── providers/
-│   │   │   ├── __init__.py
-│   │   │   ├── base.py             # BaseProvider interface
-│   │   │   ├── anthropic.py        # Anthropic provider
-│   │   │   ├── openai_provider.py  # OpenAI provider (niet openai.py — conflicteert met package)
-│   │   │   ├── ollama.py           # Ollama provider
-│   │   │   ├── lmstudio.py         # LM Studio provider
-│   │   │   └── deepseek.py         # DeepSeek provider
-│   │   └── tool_adapter.py         # Vertaalt tool-definities per provider
+│   │   ├── runner.py               # SkillRunner: stapsgewijze uitvoering
+│   │   ├── selector.py             # SkillSelector: kiest juiste skill via LLM
+│   │   ├── parser.py               # SkillParser: parsed Markdown skill-documenten
+│   │   └── models.py               # Dataclasses: Skill, SkillStep, SkillRun
+│   ├── requirements.py             # Requirements Object state-machine
+│   ├── heartbeat.py                # Simpele timer voor geplande meldingen
+├── skills/                         # Voorbeeld skill-documenten (in repo)
+│   └── voorbeelden/
+│       └── schrijf-samenvatting.md # Voorbeeld skill
 ├── tests/
-│   ├── test_router.py
-│   ├── test_providers.py
-│   └── test_tool_adapter.py
+│   ├── test_skill_runner.py
+│   ├── test_skill_selector.py
+│   ├── test_skill_parser.py
+│   ├── test_requirements.py
+│   └── test_heartbeat.py
 ```
 
 ## Gewijzigde bestanden
@@ -52,629 +56,838 @@ henk/
 ```
 henk/
 ├── henk/
-│   ├── brain.py                    # Gebruikt ModelRouter i.p.v. directe API calls
-│   ├── config.py                   # Rolconfiguratie, provider settings
-│   └── cli.py                      # henk config command
-├── henk.yaml.default               # Rollen en providers configuratie
-├── pyproject.toml                  # Nieuwe dependencies
+│   ├── cli.py                      # Skill-integratie in chat, heartbeat starten
+│   ├── brain.py                    # Skill-selectie en stap-uitvoering via LLM
+│   ├── gateway.py                  # Skill-events loggen, Requirements Object beheren
+│   ├── react_loop.py               # Integratie met Skill Runner
+│   └── config.py                   # Skill en heartbeat configuratie
+├── henk.yaml.default               # Skill en heartbeat settings
+├── pyproject.toml                  # Versie update
 ```
 
-## Kernidee: Brain vraagt een rol, Router geeft een model
+## Skills op schijf
 
-Het designdocument zegt het helder:
+Skills zijn Markdown-documenten die de gebruiker schrijft en in `~/henk/skills/` plaatst. Henk schrijft nooit zelf skills — hij kan wel via de memory review cyclus voorstellen doen om samenvattingen te verbeteren.
 
-> Brain: “Ik heb een model nodig voor: code” → Router: kijkt in config → geeft “claude-sonnet-4-6” terug → Brain: maakt de call. Morgen wil je Opus voor code? Eén regel in henk.yaml.
+```
+~/henk/skills/
+├── schrijf-blogpost.md
+├── code-review.md
+├── vergelijk-opties.md
+└── ...
+```
 
-De Brain weet niet welk model of welke provider hij gebruikt. Hij vraagt de Router om een bepaalde rol (FAST, DEFAULT, HEAVY), en de Router geeft een provider-instantie terug die een uniform interface heeft.
+### Skill-formaat
 
-## BaseProvider interface (router/providers/base.py)
+Een skill is een Markdown-bestand met een vaste structuur:
+
+```markdown
+---
+name: schrijf-blogpost
+summary: >
+  Schrijf een blogpost over een opgegeven onderwerp. Zoekt bronnen,
+  maakt een outline, schrijft een draft en levert het eindresultaat.
+tags: [schrijven, content]
+tools_required: [web_search, file_manager]
+---
+
+# Schrijf Blogpost
+
+## Stap 1: Onderwerp en publiek bepalen
+Bepaal het exacte onderwerp en doelpubliek. Als dit niet duidelijk is
+uit de opdracht, vraag de gebruiker om verduidelijking.
+
+**Actie:** Vat het onderwerp en publiek samen in één alinea.
+**Output:** Opgeslagen als requirements.
+
+## Stap 2: Bronnen zoeken
+Zoek 3-5 relevante bronnen over het onderwerp via web_search.
+
+**Actie:** Gebruik web_search voor elke bron.
+**Output:** Lijst van bronnen met korte samenvatting per bron.
+
+## Stap 3: Outline schrijven
+Maak een outline met 4-6 secties op basis van de bronnen.
+
+**Actie:** Schrijf de outline.
+**Output:** Markdown outline opgeslagen via file_manager.
+
+## Stap 4: Eerste draft
+Schrijf de volledige blogpost op basis van de outline en bronnen.
+
+**Actie:** Schrijf de blogpost.
+**Output:** Volledige blogpost opgeslagen via file_manager.
+
+## Stap 5: Review en oplevering
+Controleer de blogpost op volledigheid en kwaliteit.
+Presenteer het eindresultaat aan de gebruiker.
+
+**Actie:** Review en lever op.
+**Output:** Eindresultaat gepresenteerd.
+```
+
+Elke stap heeft:
+
+- Een titel (## Stap N: …)
+- Instructietekst (wat Henk moet doen)
+- Een **Actie:** regel (de concrete handeling)
+- Een **Output:** regel (wat het resultaat is)
+
+## Datamodellen (skills/models.py)
 
 ```python
-from __future__ import annotations
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
 from typing import Any
 
 
-@dataclass
-class ProviderResponse:
-    """Uniform antwoord van elke provider."""
-    text: str | None                    # Tekstantwoord (None als tool_use)
-    tool_calls: list[ToolCall] | None   # Tool-aanroepen (None als tekst)
-    raw: Any = None                     # Originele response voor debugging
+class StepStatus(str, Enum):
+    """Status van een skill-stap."""
+    PENDING = "pending"
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
 
 
 @dataclass
-class ToolCall:
-    """Een tool-aanroep van het model."""
-    id: str                             # Uniek ID voor tool_result terugkoppeling
-    name: str                           # Tool naam
-    parameters: dict[str, Any]          # Tool parameters
+class SkillStep:
+    """Een enkele stap in een skill."""
+    number: int                         # Stapnummer (1-indexed)
+    title: str                          # Staptitel
+    instruction: str                    # Volledige instructietekst
+    action: str                         # De concrete actie
+    expected_output: str                # Wat het resultaat moet zijn
+    status: StepStatus = StepStatus.PENDING
+    result: str | None = None           # Resultaat na uitvoering
+    error: str | None = None            # Foutmelding bij failure
 
 
-class BaseProvider(ABC):
-    """Interface voor alle model providers."""
+@dataclass
+class Skill:
+    """Een geparsed skill-document."""
+    name: str                           # Skill naam uit frontmatter
+    summary: str                        # Samenvatting voor selectie
+    tags: list[str]                     # Tags voor filtering
+    tools_required: list[str]           # Benodigde tools
+    steps: list[SkillStep]             # Alle stappen
+    source_path: str                    # Pad naar het Markdown-bestand
 
-    name: str
 
-    @abstractmethod
-    def chat(
-        self,
-        messages: list[dict[str, Any]],
-        system: str,
-        tools: list[dict[str, Any]] | None = None,
-        max_tokens: int = 1024,
-    ) -> ProviderResponse:
-        """Stuur een chat-verzoek naar het model.
+@dataclass
+class SkillRun:
+    """Een actieve skill-uitvoering."""
+    skill: Skill
+    current_step: int = 0               # Index van actieve stap (0-indexed)
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
 
-        Args:
-            messages: Conversatiegeschiedenis in Henk's interne formaat
-            system: System prompt
-            tools: Tool-definities in Henk's interne formaat (None = geen tools)
-            max_tokens: Maximum tokens in antwoord
+    @property
+    def is_complete(self) -> bool:
+        return all(s.status in (StepStatus.COMPLETED, StepStatus.SKIPPED) for s in self.skill.steps)
 
-        Returns:
-            ProviderResponse met tekst of tool-calls
-        """
+    @property
+    def active_step(self) -> SkillStep | None:
+        if self.current_step < len(self.skill.steps):
+            return self.skill.steps[self.current_step]
+        return None
 
-    @abstractmethod
-    def supports_tools(self) -> bool:
-        """Geeft aan of deze provider tool-calling ondersteunt."""
-
-    def format_tool_result(self, tool_call_id: str, result: str) -> dict[str, Any]:
-        """Formatteer een tool-resultaat voor terugkoppeling naar het model.
-
-        Default implementatie — providers kunnen dit overriden.
-        """
-        return {
-            "role": "user",
-            "content": [{"type": "tool_result", "tool_use_id": tool_call_id, "content": result}]
-        }
+    def advance(self) -> SkillStep | None:
+        """Ga naar de volgende stap. Return de nieuwe actieve stap of None als klaar."""
+        self.current_step += 1
+        return self.active_step
 ```
 
-## Provider implementaties
+## SkillParser (skills/parser.py)
 
-### anthropic.py
+Parsed een Markdown skill-document naar een `Skill` object.
 
 ```python
-class AnthropicProvider(BaseProvider):
-    """Anthropic Claude provider."""
+class SkillParser:
+    """Parsed Markdown skill-documenten."""
 
-    name = "anthropic"
+    def parse(self, file_path: Path) -> Skill:
+        """Laad en parse een skill-bestand.
 
-    def __init__(self, api_key: str, model: str):
-        self._client = anthropic.Anthropic(api_key=api_key)
-        self._model = model
-
-    def chat(self, messages, system, tools=None, max_tokens=1024) -> ProviderResponse:
-        kwargs = {
-            "model": self._model,
-            "max_tokens": max_tokens,
-            "system": system,
-            "messages": messages,
-        }
-        if tools:
-            kwargs["tools"] = self._convert_tools(tools)
-
-        response = self._client.messages.create(**kwargs)
-
-        tool_calls = []
-        text_parts = []
-        for block in response.content:
-            if block.type == "tool_use":
-                tool_calls.append(ToolCall(id=block.id, name=block.name, parameters=dict(block.input)))
-            elif hasattr(block, "text"):
-                text_parts.append(block.text)
-
-        if tool_calls:
-            return ProviderResponse(text=None, tool_calls=tool_calls, raw=response)
-        return ProviderResponse(text="".join(text_parts).strip(), tool_calls=None, raw=response)
-
-    def supports_tools(self) -> bool:
-        return True
-
-    def _convert_tools(self, tools: list[dict]) -> list[dict]:
-        """Vertaal Henk's tool-formaat naar Anthropic formaat."""
-        # Anthropic gebruikt name + description + input_schema
-        # Henk's interne formaat is identiek — geen conversie nodig
-        return tools
-
-    def format_tool_result(self, tool_call_id: str, result: str) -> dict:
-        """Anthropic-specifiek tool_result formaat."""
-        return {
-            "role": "user",
-            "content": [{"type": "tool_result", "tool_use_id": tool_call_id, "content": result}]
-        }
+        Verwacht:
+        - YAML frontmatter met name, summary, tags, tools_required
+        - Stappen als ## Stap N: Titel
+        - Per stap: instructietekst, **Actie:** regel, **Output:** regel
+        """
 ```
 
-Belangrijk: bij Anthropic moet de hele `response.content` (inclusief tool_use blocks) als assistant message worden teruggestuurd. Sla `response.content` op in `ProviderResponse.raw` zodat de Brain dit kan gebruiken.
+Gebruik `python-frontmatter` (al een dependency) voor het parsen van frontmatter. De stappen worden geparsed via regex op `## Stap \d+:` headers.
 
-### openai_provider.py
+Wees robuust: als een stap geen **Actie:** of **Output:** regel heeft, gebruik dan de hele instructietekst als actie en laat output leeg.
+
+## SkillSelector (skills/selector.py)
+
+Selecteert de juiste skill voor een taak via een LLM-call.
 
 ```python
-class OpenAIProvider(BaseProvider):
-    """OpenAI GPT provider."""
+class SkillSelector:
+    """Selecteert de juiste skill via samenvattingen."""
 
-    name = "openai"
+    def __init__(self, skills_dir: Path, router: ModelRouter):
+        self._skills_dir = skills_dir
+        self._router = router
+        self._parser = SkillParser()
 
-    def __init__(self, api_key: str, model: str):
-        self._client = openai.OpenAI(api_key=api_key)
-        self._model = model
+    def select(self, user_request: str) -> Skill | None:
+        """Selecteer de juiste skill voor een verzoek.
 
-    def chat(self, messages, system, tools=None, max_tokens=1024) -> ProviderResponse:
-        openai_messages = [{"role": "system", "content": system}] + messages
+        1. Laad alle skills en hun samenvattingen
+        2. Stuur samenvattingen + het verzoek naar een FAST model
+        3. Model kiest de beste match of zegt 'geen skill nodig'
+        4. Return de gekozen Skill of None
+        """
+        skills = self._load_all_skills()
+        if not skills:
+            return None
 
-        kwargs = {"model": self._model, "max_tokens": max_tokens, "messages": openai_messages}
-        if tools:
-            kwargs["tools"] = self._convert_tools(tools)
+        summaries = "\n".join(
+            f"- {s.name}: {s.summary}" for s in skills
+        )
 
-        response = self._client.chat.completions.create(**kwargs)
-        choice = response.choices[0]
+        provider = self._router.get_provider(ModelRole.FAST)
+        response = provider.chat(
+            messages=[{
+                "role": "user",
+                "content": f"Verzoek: {user_request}\n\nBeschikbare skills:\n{summaries}\n\n"
+                           f"Welke skill past het best? Antwoord met alleen de skill-naam, "
+                           f"of 'geen' als geen skill past."
+            }],
+            system="Je bent een skill-selector. Kies de best passende skill of zeg 'geen'.",
+        )
 
-        if choice.message.tool_calls:
-            tool_calls = [
-                ToolCall(
-                    id=tc.id,
-                    name=tc.function.name,
-                    parameters=json.loads(tc.function.arguments),
-                )
-                for tc in choice.message.tool_calls
-            ]
-            return ProviderResponse(text=None, tool_calls=tool_calls, raw=response)
+        chosen_name = response.text.strip().lower()
+        for skill in skills:
+            if skill.name.lower() == chosen_name:
+                return skill
+        return None
 
-        return ProviderResponse(text=choice.message.content, tool_calls=None, raw=response)
+    def _load_all_skills(self) -> list[Skill]:
+        """Laad alle .md bestanden uit de skills directory."""
+        skills = []
+        if not self._skills_dir.exists():
+            return skills
+        for path in self._skills_dir.glob("*.md"):
+            try:
+                skills.append(self._parser.parse(path))
+            except Exception:
+                continue  # Skip ongeldige skills
+        return skills
+```
 
-    def supports_tools(self) -> bool:
-        return True
+## SkillRunner (skills/runner.py)
 
-    def _convert_tools(self, tools: list[dict]) -> list[dict]:
-        """Vertaal Henk's tool-formaat naar OpenAI function-calling formaat."""
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": t["name"],
-                    "description": t["description"],
-                    "parameters": t["input_schema"],
-                },
-            }
-            for t in tools
+Voert een skill stap voor stap uit.
+
+```python
+class SkillRunner:
+    """Voert skills stapsgewijs uit."""
+
+    def __init__(self, brain, gateway, react_loop):
+        self._brain = brain
+        self._gateway = gateway
+        self._react_loop = react_loop
+
+    def run(self, skill: Skill, requirements: 'Requirements') -> str:
+        """Voer een complete skill uit.
+
+        Voor elke stap:
+        1. Laad alleen de actieve stap in context (niet de hele skill)
+        2. Stuur de stap-instructie + requirements naar de Brain
+        3. Brain voert uit (mogelijk met tool-calls via ReactLoop)
+        4. Registreer resultaat
+        5. Rapporteer voortgang
+        6. Ga naar volgende stap
+
+        Returns: eindresultaat als tekst
+        """
+        skill_run = SkillRun(skill=skill, started_at=datetime.now())
+        results = []
+
+        while skill_run.active_step is not None:
+            step = skill_run.active_step
+            step.status = StepStatus.ACTIVE
+
+            # Log voortgang
+            self._gateway.log_skill_event("step.started", skill.name, step.number, step.title)
+
+            try:
+                # Bouw de prompt voor deze stap
+                step_prompt = self._build_step_prompt(step, requirements, results)
+
+                # Voer de stap uit via de ReAct-loop (zodat tools beschikbaar zijn)
+                result = self._react_loop.run(step_prompt)
+
+                step.status = StepStatus.COMPLETED
+                step.result = result
+                results.append(f"Stap {step.number} ({step.title}): {result}")
+
+                self._gateway.log_skill_event("step.completed", skill.name, step.number, step.title)
+
+            except Exception as e:
+                step.status = StepStatus.FAILED
+                step.error = str(e)
+                self._gateway.log_skill_event("step.failed", skill.name, step.number, str(e))
+
+                # Rapporteer fout aan gebruiker en stop
+                return f"Stap {step.number} ({step.title}) is mislukt: {e}\n\nEerdere resultaten:\n" + "\n".join(results)
+
+            skill_run.advance()
+
+        skill_run.completed_at = datetime.now()
+        return results[-1] if results else "Skill afgerond zonder resultaat."
+
+    def _build_step_prompt(self, step: SkillStep, requirements: 'Requirements', previous_results: list[str]) -> str:
+        """Bouw de prompt voor één stap.
+
+        Bevat:
+        - De stap-instructie
+        - De eisen uit het Requirements Object
+        - Samenvattingen van eerdere stappen (niet de volledige output)
+        """
+        parts = [
+            f"## Actieve stap: {step.title}",
+            f"\n{step.instruction}",
+            f"\n**Actie:** {step.action}",
+            f"**Verwachte output:** {step.expected_output}",
         ]
 
-    def format_tool_result(self, tool_call_id: str, result: str) -> dict:
-        return {"role": "tool", "tool_call_id": tool_call_id, "content": result}
+        if requirements.specifications:
+            parts.append(f"\n## Eisen\n{requirements.specifications}")
+
+        if previous_results:
+            parts.append("\n## Eerdere stappen")
+            for r in previous_results[-3:]:  # Alleen laatste 3 voor context-beperking
+                parts.append(f"- {r[:200]}")
+
+        return "\n".join(parts)
 ```
 
-### ollama.py
+## Requirements Object (requirements.py)
 
-Ollama is OpenAI-compatible. Gebruik dezelfde client met een aangepaste base_url:
-
-```python
-class OllamaProvider(BaseProvider):
-    """Ollama lokale modellen via OpenAI-compatible API."""
-
-    name = "ollama"
-
-    def __init__(self, model: str, base_url: str = "http://localhost:11434/v1"):
-        self._client = openai.OpenAI(api_key="ollama", base_url=base_url)
-        self._model = model
-        # Zelfde logica als OpenAIProvider
-```
-
-Ollama ondersteunt tool-calling voor sommige modellen (Llama 3, Qwen). `supports_tools()` kan True retourneren — als het model het niet ondersteunt faalt de call en grijpt de fallback in.
-
-### lmstudio.py
-
-LM Studio is ook OpenAI-compatible:
+De state-machine die gesprek en werk verbindt.
 
 ```python
-class LMStudioProvider(BaseProvider):
-    """LM Studio lokale modellen via OpenAI-compatible API."""
-
-    name = "lmstudio"
-
-    def __init__(self, model: str, base_url: str = "http://localhost:1234/v1"):
-        self._client = openai.OpenAI(api_key="lmstudio", base_url=base_url)
-        self._model = model
-        # Zelfde logica als OpenAIProvider
-```
-
-### deepseek.py
-
-DeepSeek gebruikt de OpenAI-compatible API met hun eigen endpoint:
-
-```python
-class DeepSeekProvider(BaseProvider):
-    """DeepSeek provider via OpenAI-compatible API."""
-
-    name = "deepseek"
-
-    def __init__(self, api_key: str, model: str):
-        self._client = openai.OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
-        self._model = model
-        # Zelfde logica als OpenAIProvider
-```
-
-### Opmerking: code-deduplicatie
-
-Ollama, LM Studio en DeepSeek zijn allemaal OpenAI-compatible. Maak een `OpenAICompatibleProvider` base class die de gemeenschappelijke logica bevat, en laat deze drie plus `OpenAIProvider` daarvan erven. Alleen de constructor verschilt (base_url, api_key handling).
-
-## ModelRouter (router/router.py)
-
-```python
+from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 
 
-class ModelRole(str, Enum):
-    """De drie rollen voor model-selectie."""
-    FAST = "fast"           # Gesprek, routing, classificatie, kleine taken
-    DEFAULT = "default"     # 80% van het werk
-    HEAVY = "heavy"         # Code, complexe analyse, skill-uitvoering
+class RequirementsStatus(str, Enum):
+    """Status van het Requirements Object."""
+    DRAFT = "draft"                 # Eisen worden bepaald via gesprek
+    CONFIRMED = "confirmed"         # Gebruiker heeft eisen bevestigd
+    EXECUTING = "executing"         # Skill Runner is bezig
+    EVALUATED = "evaluated"         # Klaar — resultaat beschikbaar of open eisen
 
 
-class ModelRouter:
-    """Selecteert de juiste provider op basis van rol en configuratie."""
+@dataclass
+class Requirements:
+    """Het Requirements Object: verbindt gesprek en werk."""
 
-    def __init__(self, config: Config):
-        self._config = config
-        self._providers: dict[str, BaseProvider] = {}
-        self._role_mapping: dict[ModelRole, list[str]] = {}  # Rol → [provider:model, fallback, ...]
-        self._initialize()
+    task_description: str               # Wat de gebruiker wil
+    specifications: str = ""            # Verzamelde eisen (Markdown)
+    status: RequirementsStatus = RequirementsStatus.DRAFT
+    skill_name: str | None = None       # Gekoppelde skill (als gevonden)
+    created_at: datetime = field(default_factory=datetime.now)
+    confirmed_at: datetime | None = None
+    completed_at: datetime | None = None
+    result: str | None = None           # Eindresultaat
 
-    def _initialize(self) -> None:
-        """Initialiseer providers en rol-mapping uit config."""
-        # Lees provider-configuratie uit henk.yaml
-        # Maak provider-instanties aan
-        # Koppel rollen aan providers met fallback-keten
+    def add_specification(self, spec: str) -> None:
+        """Voeg een eis toe of update bestaande eisen."""
+        if self.status not in (RequirementsStatus.DRAFT, RequirementsStatus.CONFIRMED):
+            return  # Geen eisen wijzigen tijdens uitvoering
+        self.specifications += f"\n- {spec}" if self.specifications else f"- {spec}"
 
-    def get_provider(self, role: ModelRole = ModelRole.DEFAULT) -> BaseProvider:
-        """Geef de provider voor een bepaalde rol.
+    def confirm(self) -> None:
+        """Bevestig de eisen — klaar voor uitvoering."""
+        self.status = RequirementsStatus.CONFIRMED
+        self.confirmed_at = datetime.now()
 
-        Probeert de primaire provider. Bij falen: probeer fallbacks in volgorde.
-        """
-        providers_for_role = self._role_mapping.get(role, [])
-        for provider_key in providers_for_role:
-            provider = self._providers.get(provider_key)
-            if provider and self._is_available(provider):
-                return provider
-        raise RuntimeError(f"Geen beschikbare provider voor rol: {role.value}")
+    def start_execution(self) -> None:
+        """Markeer als in uitvoering."""
+        self.status = RequirementsStatus.EXECUTING
 
-    def _is_available(self, provider: BaseProvider) -> bool:
-        """Check of een provider bereikbaar is.
+    def complete(self, result: str) -> None:
+        """Markeer als afgerond met resultaat."""
+        self.status = RequirementsStatus.EVALUATED
+        self.completed_at = datetime.now()
+        self.result = result
 
-        Voor API providers: check of de API key aanwezig is.
-        Voor lokale providers: check of de server draait (simpele health check).
-        """
-
-    def list_providers(self) -> dict[str, str]:
-        """Lijst alle geconfigureerde providers met hun status."""
-        # Voor henk status output
+    def fail(self, reason: str) -> None:
+        """Markeer als mislukt."""
+        self.status = RequirementsStatus.EVALUATED
+        self.completed_at = datetime.now()
+        self.result = f"Mislukt: {reason}"
 ```
 
-## ToolAdapter (router/tool_adapter.py)
+### Hoe de Requirements flow werkt
 
-Henk’s tools zijn gedefinieerd in een intern formaat. De ToolAdapter vertaalt deze naar het formaat dat elke provider verwacht. Dit zit in de BaseProvider’s `_convert_tools()` methode — geen apart bestand nodig.
+1. **Gebruiker zegt iets dat een taak impliceert** — bijv. “Schrijf een blogpost over AI security”
+1. **Brain detecteert dat dit een taak is** — maakt Requirements Object aan (status: DRAFT)
+1. **Brain kiest een skill** (als beschikbaar) via SkillSelector
+1. **Brain stelt verduidelijkingsvragen** — “Technisch of algemeen publiek?” “Hoeveel woorden?”
+1. **Gebruiker antwoordt** — Brain voegt specificaties toe aan Requirements
+1. **Brain vraagt bevestiging** — “Ik ga een blogpost schrijven over AI security, ~1000 woorden, technisch publiek. Akkoord?”
+1. **Gebruiker bevestigt** — Requirements status → CONFIRMED
+1. **Skill Runner start** — status → EXECUTING, voert stappen uit
+1. **Skill Runner klaar** — status → EVALUATED, resultaat wordt gepresenteerd
 
-Verwijder `tool_adapter.py` uit de structuur. De vertaling zit in elke provider.
-
-## Fallback mechanisme
-
-Het fallback-mechanisme werkt op twee niveaus:
-
-### 1. Provider-niveau fallback
-
-Als een provider faalt (API error, timeout, server niet bereikbaar), probeert de Router de volgende provider in de fallback-keten voor die rol:
-
-```yaml
-roles:
-  fast:
-    primary: anthropic/claude-haiku-4-5
-    fallback:
-      - ollama/qwen2.5:3b
-  default:
-    primary: anthropic/claude-sonnet-4-6
-    fallback:
-      - openai/gpt-4o
-      - deepseek/deepseek-chat
-  heavy:
-    primary: anthropic/claude-opus-4-6
-    fallback:
-      - anthropic/claude-sonnet-4-6
-```
-
-### 2. Tool-capability fallback
-
-Als een provider geen tool-calling ondersteunt, heeft de Brain twee opties:
-
-- Gebruik de provider zonder tools (voor simpele gesprekken)
-- Val terug naar een provider die wél tools ondersteunt (voor taken die tools nodig hebben)
-
-De Brain bepaalt dit op basis van of de huidige stap tools nodig heeft.
+De Brain beslist wanneer er genoeg informatie is om te bevestigen. Als er geen skill beschikbaar is, voert de Brain de taak uit via de reguliere ReAct-loop zonder Skill Runner.
 
 ## Brain wijzigingen (brain.py)
 
-De Brain wordt drastisch vereenvoudigd. Alle provider-specifieke code verdwijnt. In plaats daarvan:
+### Taakdetectie en requirements-flow
+
+De Brain moet onderscheid maken tussen:
+
+- **Gesprek** — gewoon chatten, geen taak
+- **Taak** — iets dat uitvoering vereist
+
+Voeg een methode toe die dit classificeert:
+
+```python
+def classify_input(self, user_message: str) -> str:
+    """Classificeer input als 'gesprek' of 'taak'.
+
+    Gebruikt het FAST model voor snelle classificatie.
+    """
+    provider = self._router.get_provider(ModelRole.FAST)
+    response = provider.chat(
+        messages=[{
+            "role": "user",
+            "content": f"Is dit een verzoek om iets te doen (taak) of gewoon een gespreksbericht?\n\n"
+                       f"\"{user_message}\"\n\nAntwoord met alleen 'taak' of 'gesprek'."
+        }],
+        system="Classificeer berichten. Antwoord alleen met 'taak' of 'gesprek'.",
+    )
+    return "taak" if "taak" in response.text.strip().lower() else "gesprek"
+```
+
+### Skill-integratie
 
 ```python
 class Brain:
-    def __init__(self, config: Config, router: ModelRouter, memory_retrieval=None):
-        self._config = config
-        self._router = router
-        self._memory_retrieval = memory_retrieval
-        self._history: list[dict[str, Any]] = []
-
-    def think(self, user_message: str) -> str:
-        """Eenvoudige chat zonder tools — gebruikt FAST of DEFAULT rol."""
-        provider = self._router.get_provider(ModelRole.DEFAULT)
-        system = self._build_system_prompt(user_message)
-
-        self._history.append({"role": "user", "content": user_message})
-        response = provider.chat(messages=self._history, system=system)
-        self._history.append({"role": "assistant", "content": response.text})
-        return response.text
-
-    def run_with_tools(self, user_message: str, tool_executor, tools: list[dict]) -> str:
-        """ReAct-cyclus met tool-calling."""
-        provider = self._router.get_provider(ModelRole.DEFAULT)
-
-        if not provider.supports_tools():
-            # Fallback: probeer een provider die tools ondersteunt
-            provider = self._router.get_provider(ModelRole.HEAVY)
-
-        system = self._build_system_prompt(user_message)
-        self._history.append({"role": "user", "content": user_message})
-        messages = self._history.copy()
-
-        while True:
-            response = provider.chat(messages=messages, system=system, tools=tools)
-
-            if not response.tool_calls:
-                answer = response.text or "Ik heb nu geen antwoord."
-                self._history.append({"role": "assistant", "content": answer})
-                return answer
-
-            # Voeg assistant response toe (met tool_use blocks)
-            # Anthropic heeft de raw content nodig, OpenAI het message object
-            messages.append(self._format_assistant_tool_message(provider, response))
-
-            # Voer tools uit en stuur resultaten terug
-            for tc in response.tool_calls:
-                result = tool_executor(tc.name, tc.parameters)
-                result_text = str(result.data) if result.data else str(result.error.message) if result.error else "Geen resultaat"
-                messages.append(provider.format_tool_result(tc.id, result_text))
-
-    def greet(self) -> str:
-        """Begroeting via FAST model."""
-        provider = self._router.get_provider(ModelRole.FAST)
-        response = provider.chat(
-            messages=[{"role": "user", "content": GREETING_INSTRUCTION}],
-            system=SYSTEM_PROMPT,
-        )
-        return response.text
-
-    def summarize_session(self) -> str | None:
-        """Sessie-samenvatting via FAST model."""
-        if not self._history:
-            return None
-        provider = self._router.get_provider(ModelRole.FAST)
-        # ...
+    def __init__(self, config, router, memory_retrieval=None, skill_selector=None):
+        # ... bestaande init ...
+        self._skill_selector = skill_selector
+        self._active_requirements: Requirements | None = None
 ```
 
-### Belangrijk: provider-specifieke message-formatting
+## Heartbeat (heartbeat.py)
 
-Het lastige punt is dat Anthropic en OpenAI verschillende formaten verwachten voor tool-use berichten:
-
-**Anthropic**: assistant message bevat `response.content` (lijst van text + tool_use blocks). Tool results gaan als user message met `tool_result` content blocks.
-
-**OpenAI**: assistant message bevat `message` object met `tool_calls`. Tool results gaan als aparte `tool` role messages.
-
-De `format_assistant_tool_message()` methode op de Brain moet dit per provider afhandelen. De eenvoudigste aanpak: sla de ruwe provider-response op en laat de provider zelf bepalen hoe de assistant message eruitziet.
-
-Voeg een `format_assistant_message(response: ProviderResponse) -> dict` methode toe aan BaseProvider:
+Simpele timer die tijdens een `henk chat` sessie draait.
 
 ```python
-class BaseProvider(ABC):
-    @abstractmethod
-    def format_assistant_message(self, response: ProviderResponse) -> dict[str, Any]:
-        """Formatteer de assistant response als message voor de conversatie-history."""
+import threading
+from dataclasses import dataclass
+from datetime import datetime
+
+
+@dataclass
+class ScheduledReminder:
+    """Een geplande herinnering."""
+    id: str
+    message: str
+    trigger_at: datetime
+    triggered: bool = False
+
+
+class Heartbeat:
+    """Simpele timer voor geplande meldingen.
+
+    Draait alleen tijdens een actieve henk chat sessie.
+    Controleert elke 30 seconden of er herinneringen moeten worden getriggerd.
+    """
+
+    def __init__(self, interval_seconds: int = 30):
+        self._interval = interval_seconds
+        self._reminders: list[ScheduledReminder] = []
+        self._timer: threading.Timer | None = None
+        self._running = False
+        self._callback = None  # Wordt gezet door cli.py
+
+    def start(self, callback) -> None:
+        """Start de heartbeat. Callback wordt aangeroepen met een reminder message."""
+        self._callback = callback
+        self._running = True
+        self._tick()
+
+    def stop(self) -> None:
+        """Stop de heartbeat."""
+        self._running = False
+        if self._timer:
+            self._timer.cancel()
+
+    def add_reminder(self, reminder: ScheduledReminder) -> None:
+        """Plan een herinnering."""
+        self._reminders.append(reminder)
+
+    def _tick(self) -> None:
+        """Check of er herinneringen moeten worden getriggerd."""
+        if not self._running:
+            return
+
+        now = datetime.now()
+        for reminder in self._reminders:
+            if not reminder.triggered and reminder.trigger_at <= now:
+                reminder.triggered = True
+                if self._callback:
+                    self._callback(reminder.message)
+
+        # Verwijder getriggerde herinneringen
+        self._reminders = [r for r in self._reminders if not r.triggered]
+
+        # Plan volgende tick
+        self._timer = threading.Timer(self._interval, self._tick)
+        self._timer.daemon = True  # Stop als hoofdthread stopt
+        self._timer.start()
+
+    @property
+    def pending_count(self) -> int:
+        return len([r for r in self._reminders if not r.triggered])
 ```
 
-Anthropic retourneert `{"role": "assistant", "content": response.raw.content}`.
-OpenAI retourneert `{"role": "assistant", "content": response.raw.choices[0].message}`.
+### Herinnering-tool
+
+Voeg een `reminder` tool toe zodat Henk zelf herinneringen kan plannen:
+
+```python
+class ReminderTool(BaseTool):
+    """Plan een herinnering voor later in de sessie."""
+
+    name = "reminder"
+    description = "Plan een herinnering. Werkt alleen tijdens de huidige chat-sessie."
+    permissions = ["write"]
+    parameters = {
+        "type": "object",
+        "properties": {
+            "message": {"type": "string", "description": "De herinnering"},
+            "minutes": {"type": "integer", "description": "Over hoeveel minuten"},
+        },
+        "required": ["message", "minutes"],
+    }
+
+    def __init__(self, heartbeat: Heartbeat):
+        self._heartbeat = heartbeat
+
+    def execute(self, **kwargs) -> ToolResult:
+        from datetime import timedelta
+        reminder = ScheduledReminder(
+            id=uuid.uuid4().hex[:8],
+            message=kwargs["message"],
+            trigger_at=datetime.now() + timedelta(minutes=kwargs["minutes"]),
+        )
+        self._heartbeat.add_reminder(reminder)
+        tagged = tag_output(self.name, f"Herinnering gepland over {kwargs['minutes']} minuten.", external=False)
+        return ToolResult(success=True, data=tagged, source_tag="[TOOL:reminder]")
+```
+
+## CLI wijzigingen (cli.py)
+
+### Skill-integratie in chat-loop
+
+De chat-loop moet nu onderscheid maken tussen gesprek en taken:
+
+```python
+# In de chat while-loop:
+while True:
+    user_input = console.input("[bold]Henk > [/bold]")
+    # ... bestaande exit/empty checks ...
+
+    # Classificeer input
+    input_type = brain.classify_input(user_input)
+
+    if input_type == "taak" and not brain._active_requirements:
+        # Nieuwe taak — maak Requirements Object aan
+        requirements = Requirements(task_description=user_input)
+
+        # Probeer een skill te selecteren
+        skill = skill_selector.select(user_input) if skill_selector else None
+        if skill:
+            requirements.skill_name = skill.name
+            console.print(f"[dim]Skill gevonden: {skill.name}[/dim]")
+
+        brain._active_requirements = requirements
+
+        # Laat Brain de eisen verfijnen
+        response = brain.refine_requirements(user_input, requirements)
+        # Brain kan vragen stellen of direct bevestigen
+
+    elif brain._active_requirements and brain._active_requirements.status == RequirementsStatus.DRAFT:
+        # Lopende requirements-verfijning
+        response = brain.refine_requirements(user_input, brain._active_requirements)
+
+    elif brain._active_requirements and brain._active_requirements.status == RequirementsStatus.CONFIRMED:
+        # Eisen bevestigd — start uitvoering
+        requirements = brain._active_requirements
+        requirements.start_execution()
+
+        if requirements.skill_name:
+            skill = skill_selector.select(requirements.task_description)
+            result = skill_runner.run(skill, requirements)
+        else:
+            result = react_loop.run(requirements.task_description + "\n\nEisen:\n" + requirements.specifications)
+
+        requirements.complete(result)
+        brain._active_requirements = None
+        response = result
+
+    else:
+        # Gewoon gesprek
+        response = gateway.process(user_input)
+```
+
+Dit is een vereenvoudigde flow. De Brain’s `refine_requirements()` methode handelt het gesprek af: stelt vragen, voegt specificaties toe, en detecteert wanneer de gebruiker bevestigt (bijv. “ja”, “akkoord”, “ga maar”, “doe maar”).
+
+### Heartbeat integratie
+
+```python
+# Bij het starten van henk chat:
+heartbeat = Heartbeat(interval_seconds=30)
+
+def on_reminder(message: str):
+    console.print(f"\n[yellow]⏰ Herinnering: {message}[/yellow]\n[bold]Henk > [/bold]", end="")
+
+heartbeat.start(on_reminder)
+
+# Bij het afsluiten:
+heartbeat.stop()
+```
+
+### Herinnering-tool toevoegen
+
+```python
+from henk.heartbeat import Heartbeat, ReminderTool
+
+tools["reminder"] = ReminderTool(heartbeat=heartbeat)
+```
+
+## Gateway wijzigingen (gateway.py)
+
+### Skill-events loggen
+
+```python
+def log_skill_event(self, event_type: str, skill_name: str, step_number: int, detail: str = "") -> None:
+    """Log een skill-gerelateerd event."""
+    self._transcript.log_event({
+        "type": f"skill.{event_type}",
+        "session_id": self._transcript.session_id,
+        "skill": skill_name,
+        "step": step_number,
+        "detail": detail,
+    })
+```
 
 ## Config wijzigingen
 
 ### henk.yaml.default
 
-Vervang de huidige `provider:` sectie met:
+Voeg toe:
 
 ```yaml
-providers:
-  anthropic:
-    api_key_env: ANTHROPIC_API_KEY
-  openai:
-    api_key_env: OPENAI_API_KEY
-  ollama:
-    base_url: http://localhost:11434/v1
-  lmstudio:
-    base_url: http://localhost:1234/v1
-  deepseek:
-    api_key_env: DEEPSEEK_API_KEY
+skills:
+  dir: ~/henk/skills
+  enabled: true
 
-roles:
-  fast:
-    primary: anthropic/claude-haiku-4-5
-    fallback:
-      - ollama/qwen2.5:3b
-  default:
-    primary: anthropic/claude-sonnet-4-6
-    fallback:
-      - openai/gpt-4o
-      - deepseek/deepseek-chat
-  heavy:
-    primary: anthropic/claude-opus-4-6
-    fallback:
-      - anthropic/claude-sonnet-4-6
+heartbeat:
+  enabled: true
+  interval_seconds: 30
 ```
-
-Formaat: `provider/model`. De Router splitst dit op `/` om de provider-instantie en het model te bepalen.
 
 ### config.py
 
-Voeg toe:
-
 ```python
 @property
-def providers_config(self) -> dict:
-    return self._data.get("providers", {})
+def skills_dir(self) -> Path:
+    return Path(self._data.get("skills", {}).get("dir", "~/henk/skills")).expanduser()
 
 @property
-def roles_config(self) -> dict:
-    return self._data.get("roles", {})
+def skills_enabled(self) -> bool:
+    return bool(self._data.get("skills", {}).get("enabled", True))
+
+@property
+def heartbeat_enabled(self) -> bool:
+    return bool(self._data.get("heartbeat", {}).get("enabled", True))
+
+@property
+def heartbeat_interval(self) -> int:
+    return int(self._data.get("heartbeat", {}).get("interval_seconds", 30))
 ```
 
-Verwijder de oude `provider` en `model` properties. Vervang ze door de Router.
-
-### .env.example
-
-```
-# Henk API keys — vul minimaal één provider in
-ANTHROPIC_API_KEY=
-# OPENAI_API_KEY=
-# DEEPSEEK_API_KEY=
-# Ollama en LM Studio hebben geen API key nodig
-```
-
-## CLI wijzigingen
-
-### Nieuw command: `henk config`
-
-Toont de huidige configuratie en laat limieten aanpassen:
-
-```python
-@app.command()
-def config(
-    show: bool = typer.Option(False, "--show", help="Toon huidige configuratie"),
-    set_limit: str = typer.Option(None, "--set", help="Stel limiet in, bijv. 'max_tool_calls=8'"),
-):
-    """Bekijk of wijzig Henk's configuratie."""
-    data_dir = _get_data_dir()
-    cfg = load_config(data_dir)
-
-    if set_limit:
-        key, _, value = set_limit.partition("=")
-        # Schrijf naar henk.yaml
-        # Valideer dat de key bestaat en de value geldig is
-        ...
-        console.print(f"{key} ingesteld op {value}")
-        return
-
-    if show or not set_limit:
-        # Toon rollen met actieve providers
-        router = ModelRouter(cfg)
-        console.print("[bold]Rollen:[/bold]")
-        for role in ModelRole:
-            try:
-                provider = router.get_provider(role)
-                console.print(f"  {role.value}: {provider.name}/{provider._model}")
-            except RuntimeError:
-                console.print(f"  {role.value}: [red]geen provider beschikbaar[/red]")
-
-        console.print(f"\n[bold]Limieten:[/bold]")
-        console.print(f"  max_tool_calls: {cfg.max_tool_calls}")
-        console.print(f"  max_retries_content: {cfg.max_retries_content}")
-        console.print(f"  max_retries_technical: {cfg.max_retries_technical}")
-```
-
-### henk status uitbreiden
-
-Voeg provider-informatie toe aan `henk status`:
-
-```
-Gateway:     actief (embedded in CLI)
-Kill switch: normaal
-Provider:    anthropic/claude-sonnet-4-6 (DEFAULT)
-Fallback:    openai/gpt-4o, deepseek/deepseek-chat
-```
-
-## Dependencies
-
-### pyproject.toml
+### pyproject.toml + **init**.py
 
 ```toml
-version = "0.4.0"
-
-dependencies = [
-    "typer>=0.9.0",
-    "anthropic>=0.40.0",
-    "openai>=1.0.0",        # Terug — nu voor OpenAI, Ollama, LM Studio, DeepSeek
-    "python-dotenv>=1.0.0",
-    "pyyaml>=6.0",
-    "rich>=13.0.0",
-    "requests>=2.31.0",
-    "chromadb>=0.4.0",
-    "python-frontmatter>=1.0.0",
-]
+version = "0.5.0"
 ```
 
-### henk/**init**.py
+```python
+__version__ = "0.5.0"
+```
+
+## henk init aanpassen
+
+Voeg toe:
+
+- Maak `~/henk/skills/` aan als die niet bestaat
+
+## Voorbeeld skill: schrijf-samenvatting.md
+
+Plaats in de repo als `skills/voorbeelden/schrijf-samenvatting.md`. De gebruiker kopieert skills naar `~/henk/skills/`.
+
+```markdown
+---
+name: schrijf-samenvatting
+summary: >
+  Maak een beknopte samenvatting van een document of tekst.
+  Leest het bronbestand, identificeert de hoofdpunten en
+  schrijft een samenvatting van de gevraagde lengte.
+tags: [schrijven, samenvatting]
+tools_required: [file_manager]
+---
+
+# Schrijf Samenvatting
+
+## Stap 1: Bron lezen
+Lees het bronbestand dat de gebruiker wil laten samenvatten.
+
+**Actie:** Gebruik file_manager om het bestand te lezen.
+**Output:** Inhoud van het bronbestand.
+
+## Stap 2: Hoofdpunten identificeren
+Analyseer de tekst en identificeer de 3-5 belangrijkste punten.
+
+**Actie:** Maak een lijst van hoofdpunten.
+**Output:** Genummerde lijst van hoofdpunten.
+
+## Stap 3: Samenvatting schrijven
+Schrijf een samenvatting op basis van de hoofdpunten.
+Respecteer de gewenste lengte uit de eisen.
+
+**Actie:** Schrijf de samenvatting.
+**Output:** Samenvatting opgeslagen via file_manager.
+```
+
+## Brain: refine_requirements methode
 
 ```python
-__version__ = "0.4.0"
+def refine_requirements(self, user_input: str, requirements: Requirements) -> str:
+    """Verfijn eisen via gesprek.
+
+    De Brain:
+    1. Analyseert de taak en wat er nog onduidelijk is
+    2. Stelt maximaal één gerichte vraag (Henk stelt nooit drie vragen tegelijk)
+    3. Voegt antwoorden toe aan requirements.specifications
+    4. Detecteert bevestiging en zet status naar CONFIRMED
+
+    Bevestigingspatronen: 'ja', 'akkoord', 'ga maar', 'doe maar', 'prima', 'start maar'
+    """
+    provider = self._router.get_provider(ModelRole.DEFAULT)
+    system = self._build_system_prompt(user_input)
+
+    # Bouw een prompt die de Brain vraagt om eisen te verfijnen
+    prompt = (
+        f"De gebruiker wil: {requirements.task_description}\n"
+        f"Huidige eisen:\n{requirements.specifications or '(nog geen)'}\n"
+        f"Laatste bericht van de gebruiker: {user_input}\n\n"
+        f"Analyseer of er genoeg informatie is om te beginnen. "
+        f"Als er iets onduidelijk is, stel dan één gerichte vraag. "
+        f"Als alles duidelijk is, vat de eisen samen en vraag bevestiging. "
+        f"Als de gebruiker bevestigt (ja/akkoord/doe maar), antwoord dan exact met: [CONFIRMED]"
+    )
+
+    response = provider.chat(
+        messages=self._history + [{"role": "user", "content": prompt}],
+        system=system,
+    )
+
+    answer = response.text
+
+    if "[CONFIRMED]" in answer:
+        requirements.confirm()
+        answer = answer.replace("[CONFIRMED]", "").strip()
+    else:
+        # Voeg eventuele nieuwe specificaties toe
+        requirements.add_specification(user_input)
+
+    self._history.append({"role": "user", "content": user_input})
+    self._history.append({"role": "assistant", "content": answer})
+    return answer
 ```
 
 ## Tests
 
-### test_router.py
+### test_skill_parser.py
 
-- Router selecteert juiste provider voor elke rol
-- Fallback werkt als primaire provider niet beschikbaar is
-- RuntimeError als geen enkele provider beschikbaar is
-- Provider-status check werkt (API key aanwezig, server bereikbaar)
+- Parsed een geldige skill met frontmatter en stappen
+- Stappen worden correct genummerd
+- Ontbrekende Actie/Output regels worden graceful afgehandeld
+- Ongeldige bestanden geven een duidelijke fout
 
-### test_providers.py
+### test_skill_selector.py
 
-- Anthropic provider formatteert tool-calls correct
-- OpenAI provider vertaalt tools naar function-calling formaat
-- OpenAI-compatible providers (Ollama, LM Studio, DeepSeek) gebruiken juiste base_url
-- ProviderResponse is uniform ongeacht de provider
-- format_tool_result en format_assistant_message zijn provider-specifiek correct
+- Selecteert de juiste skill op basis van een verzoek
+- Retourneert None als geen skill past
+- Werkt met lege skills directory
 
-### test_tool_adapter.py (verwijderd — logica zit in providers)
+### test_skill_runner.py
 
-Voeg in plaats daarvan tests toe aan test_providers.py voor tool-conversie per provider.
+- Voert alle stappen van een skill sequentieel uit
+- Stopt bij een gefaalde stap met foutmelding
+- Rapporteert voortgang per stap
+- Eerdere resultaten worden meegestuurd (max 3)
+
+### test_requirements.py
+
+- Status-flow: draft → confirmed → executing → evaluated
+- Specificaties toevoegen werkt in draft en confirmed
+- Specificaties toevoegen wordt genegeerd tijdens executing
+- Complete en fail zetten status naar evaluated
+
+### test_heartbeat.py
+
+- Herinnering triggert na opgegeven tijd
+- Callback wordt aangeroepen bij trigger
+- Stop beëindigt de timer
+- Meerdere herinneringen worden onafhankelijk getrackt
 
 ## Volgorde van bouwen
 
-1. **router/providers/base.py** — BaseProvider interface + ProviderResponse + ToolCall
-1. **router/providers/anthropic.py** — Anthropic provider (verplaats bestaande logica uit brain.py)
-1. **router/providers/openai_provider.py** — OpenAI provider + OpenAICompatibleProvider base
-1. **router/providers/ollama.py** — erft van OpenAICompatible
-1. **router/providers/lmstudio.py** — erft van OpenAICompatible
-1. **router/providers/deepseek.py** — erft van OpenAICompatible
-1. **router/router.py** — ModelRouter met rol-mapping en fallback
-1. **brain.py herschrijven** — vervang directe API calls door Router
-1. **config.py aanpassen** — nieuwe provider/rollen config
-1. **cli.py aanpassen** — henk config, henk status uitbreiden
-1. **henk.yaml.default** — rollen-configuratie
+1. **skills/models.py** — dataclasses
+1. **skills/parser.py** — Markdown skill-parser
+1. **skills/selector.py** — skill-selectie via LLM
+1. **requirements.py** — Requirements Object state-machine
+1. **skills/runner.py** — stapsgewijze uitvoering
+1. **heartbeat.py** — timer + ScheduledReminder + ReminderTool
+1. **brain.py wijzigingen** — classify_input, refine_requirements, skill-integratie
+1. **gateway.py wijzigingen** — skill-events loggen
+1. **react_loop.py wijzigingen** — integratie met skill-stap uitvoering
+1. **cli.py wijzigingen** — taakdetectie, requirements-flow, heartbeat
+1. **config.py + henk.yaml.default** — skill en heartbeat config
+1. **Voorbeeld skill** — schrijf-samenvatting.md
 1. **Tests**
 
 ## Samenvatting
 
-v0.4 voegt toe:
+v0.5 voegt toe:
 
-1. ModelRouter als abstractielaag — Brain vraagt een rol, Router geeft een provider
-1. Vijf providers: Anthropic, OpenAI, Ollama, LM Studio, DeepSeek
-1. Drie rollen: FAST, DEFAULT, HEAVY
-1. Automatisch fallback bij provider-falen
-1. `henk config` voor configuratiebeheer via CLI
-1. OpenAI-compatible base class voor Ollama, LM Studio en DeepSeek
-1. Uniform ProviderResponse formaat ongeacht de provider
+1. Skill Runner: stapsgewijze uitvoering van Markdown skill-documenten
+1. Skill-selectie via samenvattingen en LLM-classificatie
+1. Requirements Object: draft → confirmed → executing → evaluated
+1. Eisen-verfijning via gesprek voordat uitvoering begint
+1. Simpele heartbeat met herinneringen tijdens chat-sessie
+1. Voortgangsrapportage per skill-stap
+1. Voorbeeld skill meegeleverd
 
-**Kernregel: de Brain weet niet welk model hij gebruikt. Hij vraagt een rol, de Router levert.**
+**Kernregel: één stap tegelijk in context. Niet de hele skill laden.**
 
 **Referenties:**
 
 - `CLAUDE.md` — architectuurprincipes
-- `docs/henk-design-v14.docx` — hoofdstuk 15 (Model Router)
-- Let op: Ollama heeft een bekende bug met Qwen 3.5 tool-calling. vLLM of llama-server zijn alternatieven.
+- `docs/henk-design-v14.docx` — hoofdstuk 5.2 (Skills), 5.3 (Skill Runner), 12.2 (Requirements Object)
