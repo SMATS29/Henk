@@ -1,53 +1,458 @@
-# Henk CLI UX Overhaul — Bouwinstructie voor Claude Code
+# Henk CLI Polish — Bouwinstructie voor Claude Code
 
 ## Context
 
-Henk is een persoonlijke AI-orchestrator (v0.5). De CLI werkt maar voelt niet als een modern tool. Dit is een UX-upgrade die de CLI verandert naar een ervaring zoals Claude Code of Codex: je typt `henk`, je bent in gesprek, slash-commands voor alles.
+Henk heeft een werkende REPL met prompt_toolkit, slash-commands en autocomplete. Deze instructie voegt vier UX-verbeteringen toe die de CLI op het niveau brengen van een moderne tool.
 
-## Wat er verandert
+## Vier wijzigingen
 
-### Voor deze wijziging
+1. **Spinner/indicator** — visuele feedback tijdens denken, tool-calls en skill-stappen
+1. **Markdown rendering** — Rich Markdown voor Henk’s antwoorden
+1. **Multi-line input** — Shift+Enter voor nieuwe regel, Enter om te versturen
+1. **Token-teller** — totaal tokengebruik per sessie, getoond na elk antwoord
 
-```
-> henk chat          # Start gesprek
-> henk init          # Initialiseer
-> henk stop          # Stop
-> henk status        # Toon status
-```
+## 1. Spinner/indicator
 
-### Na deze wijziging
+### Wat de gebruiker ziet
 
 ```
-> henk               # Start gesprek (auto-init bij eerste keer)
-> /stop              # In de chat: hard stop
-> /status            # In de chat: toon status
-> /help              # In de chat: toon alle commands
-> /exit              # In de chat: sluit af
+❯ Zoek het weer in Amsterdam
 
-> henk stop          # Vanuit terminal (zonder Henk te openen)
-> henk status        # Vanuit terminal
+⠋ Henk denkt...
+⠙ web_search: weer Amsterdam
+⠹ Henk denkt...
+
+Het is 14°C en bewolkt in Amsterdam.
+
+❯ Schrijf een samenvatting van dat rapport
+
+⠋ Stap 1/3: Bron lezen
+⠙ file_manager: read rapport.md
+⠹ Stap 2/3: Hoofdpunten identificeren
+⠸ Stap 3/3: Samenvatting schrijven
+
+Hier is de samenvatting...
 ```
 
-## Nieuwe dependency
+### Implementatie
 
-Voeg `prompt_toolkit` toe aan pyproject.toml:
+Gebruik Rich’s `console.status()` voor de spinner. Het probleem: de spinner moet updaten terwijl de Brain en tools werken. Dat betekent dat de spinner in de aanroepende code zit, niet in de Brain zelf.
 
-```toml
-dependencies = [
-    # ... bestaande ...
-    "prompt_toolkit>=3.0.0",
-]
+Maak een `SpinnerContext` class die de spinner beheert:
+
+```python
+"""Visuele feedback tijdens verwerking."""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from rich.console import Console
+
+
+class Spinner:
+    """Beheert de spinner-indicator in de REPL."""
+
+    def __init__(self, console: Console):
+        self._console = console
+        self._status = None
+
+    def start(self, message: str = "Henk denkt...") -> None:
+        """Start of update de spinner met een nieuw bericht."""
+        if self._status is not None:
+            self._status.update(message)
+        else:
+            self._status = self._console.status(message, spinner="dots")
+            self._status.start()
+
+    def update(self, message: str) -> None:
+        """Update het spinner-bericht."""
+        if self._status is not None:
+            self._status.update(message)
+
+    def stop(self) -> None:
+        """Stop de spinner."""
+        if self._status is not None:
+            self._status.stop()
+            self._status = None
 ```
 
-`prompt_toolkit` vervangt Rich’s `console.input()` voor de REPL-input. Rich blijft voor output-formatting.
+### Spinner integreren in de flow
+
+De spinner moet updaten op drie momenten:
+
+- Brain start met denken → “Henk denkt…”
+- Tool wordt aangeroepen → “web_search: weer Amsterdam”
+- Skill-stap start → “Stap 2/5: Bronnen zoeken”
+
+De schoonste manier: geef een callback mee aan de ReactLoop en SkillRunner die de spinner update.
+
+**In repl.py**, rond de `gateway.process()` call:
+
+```python
+spinner = Spinner(console)
+
+try:
+    spinner.start("Henk denkt...")
+    
+    # Geef spinner.update als callback mee
+    response = gateway.process(stripped, on_status=spinner.update)
+    
+    spinner.stop()
+    if response:
+        console.print(...)
+except Exception:
+    spinner.stop()
+    ...
+```
+
+**In gateway.py**, propageer de callback:
+
+```python
+def process(self, user_message: str, on_status: Callable[[str], None] | None = None) -> str:
+    # ... bestaande logica ...
+    response = self._react_loop.run(user_message, on_status=on_status)
+    return response
+```
+
+**In react_loop.py**, roep de callback aan bij tool-calls:
+
+```python
+def run(self, user_message: str, on_status: Callable[[str], None] | None = None) -> str:
+    # ...
+    def execute_tool(tool_name: str, params: dict) -> ToolResult:
+        if on_status:
+            # Toon de tool en een relevante parameter
+            detail = _tool_detail(tool_name, params)
+            on_status(f"{tool_name}: {detail}")
+        # ... bestaande tool executie ...
+        if on_status:
+            on_status("Henk denkt...")
+        return result
+
+    return self._brain.run_with_tools(user_message, execute_tool)
+
+
+def _tool_detail(tool_name: str, params: dict) -> str:
+    """Maak een korte beschrijving van de tool-call voor de spinner."""
+    if tool_name == "web_search":
+        return params.get("query", "")[:50]
+    if tool_name == "file_manager":
+        action = params.get("action", "")
+        path = params.get("path", "")
+        return f"{action} {path}"[:50]
+    if tool_name == "code_runner":
+        return params.get("language", "code")
+    if tool_name == "memory_write":
+        return params.get("title", "")[:50]
+    return ""
+```
+
+**In skills/runner.py**, update spinner bij elke stap:
+
+```python
+def run(self, skill: Skill, requirements: Requirements, on_status: Callable | None = None) -> str:
+    # ...
+    while skill_run.active_step is not None:
+        step = skill_run.active_step
+        total = len(skill.steps)
+        if on_status:
+            on_status(f"Stap {step.number}/{total}: {step.title}")
+        # ... bestaande stap-uitvoering ...
+```
+
+## 2. Markdown rendering
+
+### Wat de gebruiker ziet
+
+In plaats van platte tekst:
+
+```
+Hier zijn drie opties:
+
+1. **Optie A** — snel maar duur
+2. **Optie B** — langzaam maar goedkoop
+3. **Optie C** — balans
+
+```python
+print("hello world")
+`` `
+```
+
+Ziet de gebruiker: vetgedrukte tekst daadwerkelijk vet, genummerde lijsten netjes geïndenteerd, en code blocks met syntax highlighting en een achtergrondkleur.
+
+### Implementatie
+
+Rich heeft ingebouwde Markdown rendering via `Markdown`:
+
+```python
+from rich.markdown import Markdown
+
+# In plaats van:
+console.print(f"[cyan]{response}[/cyan]\n")
+
+# Gebruik:
+console.print(Markdown(response))
+console.print()  # Lege regel na antwoord
+```
+
+Dat is alles. Rich doet de rest: kopjes krijgen kleur, code blocks krijgen syntax highlighting via Pygments, lijsten worden netjes gerenderd.
+
+### Pas op: niet alles is Markdown
+
+Foutmeldingen, spinner-tekst en slash-command output zijn geen Markdown. Gebruik `Markdown()` alleen voor Henk’s antwoorden — de output van `gateway.process()` en `react_loop.run()`.
+
+Maak een helper:
+
+```python
+def print_henk(console: Console, text: str) -> None:
+    """Print Henk's antwoord met Markdown rendering."""
+    try:
+        console.print(Markdown(text))
+    except Exception:
+        # Fallback naar platte tekst als Markdown parsing faalt
+        console.print(f"[cyan]{text}[/cyan]")
+    console.print()  # Lege regel
+```
+
+Gebruik `print_henk()` overal waar Henk’s antwoorden worden getoond.
+
+## 3. Multi-line input
+
+### Wat de gebruiker ziet
+
+```
+❯ Dit is een korte vraag[Enter]
+
+Henk antwoordt...
+
+❯ Dit is een langere tekst[Shift+Enter]
+  die over meerdere regels gaat[Shift+Enter]
+  en pas verstuurd wordt als ik Enter druk[Enter]
+
+Henk antwoordt...
+```
+
+### Implementatie
+
+prompt_toolkit ondersteunt multi-line input via key bindings. Shift+Enter voegt een nieuwe regel toe, Enter verstuurt.
+
+```python
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
+
+def _build_key_bindings() -> KeyBindings:
+    """Key bindings: Enter = versturen, Shift+Enter = nieuwe regel."""
+    bindings = KeyBindings()
+
+    @bindings.add(Keys.Enter)
+    def handle_enter(event):
+        """Enter = verstuur het bericht."""
+        event.current_buffer.validate_and_handle()
+
+    @bindings.add(Keys.ShiftEnter)
+    def handle_shift_enter(event):
+        """Shift+Enter = nieuwe regel."""
+        event.current_buffer.insert_text("\n")
+
+    return bindings
+```
+
+Geef de bindings mee aan de PromptSession:
+
+```python
+session = PromptSession(
+    completer=_build_completer(),
+    style=PROMPT_STYLE,
+    key_bindings=_build_key_bindings(),
+    multiline=True,
+)
+```
+
+### Prompt voor vervolg-regels
+
+Bij multi-line input wil je een visuele indicatie dat je op een vervolg-regel zit:
+
+```python
+from prompt_toolkit.formatted_text import HTML
+
+def _get_prompt(line_number: int, wrap_count: int) -> str:
+    """Prompt voor eerste en vervolg-regels."""
+    if line_number == 0:
+        return HTML("<prompt>❯ </prompt>")
+    return HTML("<prompt>  </prompt>")  # Ingesprongen vervolg-regel
+
+
+session = PromptSession(
+    # ...
+    prompt_continuation="  ",  # Inspringen voor vervolg-regels
+)
+```
+
+Eigenlijk is `prompt_continuation` de simpelste aanpak. Dat toont `  ` (twee spaties) voor elke vervolg-regel.
+
+## 4. Token-teller
+
+### Wat de gebruiker ziet
+
+Na elk antwoord, subtiel in dim:
+
+```
+❯ Leg uit hoe TCP werkt
+
+TCP is een verbindingsgeoriënteerd protocol...
+[uitleg]
+
+                                          sessie: 1.2k tokens
+
+❯ En UDP?
+
+UDP is het tegenovergestelde...
+
+                                          sessie: 2.8k tokens
+```
+
+De teller is rechts uitgelijnd, dim, en toont het cumulatieve tokengebruik van de hele sessie.
+
+### Implementatie
+
+De Anthropic API retourneert token-informatie in de response:
+
+```python
+response = client.messages.create(...)
+input_tokens = response.usage.input_tokens
+output_tokens = response.usage.output_tokens
+```
+
+Maak een `TokenTracker` class:
+
+```python
+"""Token-tracking per sessie."""
+
+from __future__ import annotations
+
+
+class TokenTracker:
+    """Houdt tokengebruik bij per sessie."""
+
+    def __init__(self):
+        self._total_input: int = 0
+        self._total_output: int = 0
+        self._call_count: int = 0
+
+    def add(self, input_tokens: int, output_tokens: int) -> None:
+        """Registreer tokens van een API call."""
+        self._total_input += input_tokens
+        self._total_output += output_tokens
+        self._call_count += 1
+
+    @property
+    def total(self) -> int:
+        """Totaal tokens (input + output)."""
+        return self._total_input + self._total_output
+
+    @property
+    def total_input(self) -> int:
+        return self._total_input
+
+    @property
+    def total_output(self) -> int:
+        return self._total_output
+
+    @property
+    def call_count(self) -> int:
+        return self._call_count
+
+    def format(self) -> str:
+        """Formatteer voor weergave."""
+        total = self.total
+        if total < 1000:
+            return f"{total} tokens"
+        return f"{total / 1000:.1f}k tokens"
+```
+
+### Token-informatie ophalen uit providers
+
+Het probleem: de `ProviderResponse` bevat nu geen token-informatie. Voeg dit toe:
+
+```python
+# In router/providers/base.py
+@dataclass
+class ProviderResponse:
+    text: str | None
+    tool_calls: list[ToolCall] | None
+    raw: Any = None
+    input_tokens: int = 0       # Nieuw
+    output_tokens: int = 0      # Nieuw
+```
+
+**In anthropic.py:**
+
+```python
+return ProviderResponse(
+    text=...,
+    tool_calls=...,
+    raw=response,
+    input_tokens=response.usage.input_tokens,
+    output_tokens=response.usage.output_tokens,
+)
+```
+
+**In openai_provider.py (en OpenAI-compatible providers):**
+
+```python
+return ProviderResponse(
+    text=...,
+    tool_calls=...,
+    raw=response,
+    input_tokens=getattr(response.usage, "prompt_tokens", 0),
+    output_tokens=getattr(response.usage, "completion_tokens", 0),
+)
+```
+
+### Token-tracking in de Brain
+
+De Brain registreert tokens na elke API call:
+
+```python
+class Brain:
+    def __init__(self, ...):
+        # ...
+        self.token_tracker = TokenTracker()
+
+    def _track_response(self, response: ProviderResponse) -> None:
+        """Registreer tokengebruik."""
+        self.token_tracker.add(response.input_tokens, response.output_tokens)
+```
+
+Roep `_track_response()` aan na elke `provider.chat()` call in `think()`, `run_with_tools()`, `greet()`, `classify_input()`, `refine_requirements()`, `summarize_session()`.
+
+### Weergave in de REPL
+
+Na elk antwoord, toon de sessie-teller rechts uitgelijnd:
+
+```python
+def print_henk(console: Console, text: str, token_tracker: TokenTracker) -> None:
+    """Print Henk's antwoord met Markdown en token-indicatie."""
+    try:
+        console.print(Markdown(text))
+    except Exception:
+        console.print(f"[cyan]{text}[/cyan]")
+
+    # Token-teller rechts uitgelijnd
+    token_text = f"sessie: {token_tracker.format()}"
+    width = console.width
+    console.print(f"[dim]{token_text:>{width}}[/dim]")
+    console.print()  # Lege regel
+```
 
 ## Nieuwe bestanden
 
 ```
 henk/
 ├── henk/
-│   ├── repl.py                 # REPL: input loop met prompt_toolkit
-│   ├── commands.py             # Slash-command definities en handlers
+│   ├── spinner.py              # Spinner class
+│   ├── token_tracker.py        # TokenTracker class
+│   ├── output.py               # print_henk() helper met Markdown rendering
 ```
 
 ## Gewijzigde bestanden
@@ -55,707 +460,114 @@ henk/
 ```
 henk/
 ├── henk/
-│   ├── cli.py                  # Vereenvoudigd: henk = chat, subcommands behouden
+│   ├── repl.py                 # Multi-line input, spinner integratie, token weergave
+│   ├── react_loop.py           # on_status callback voor spinner
+│   ├── gateway.py              # on_status propagatie
+│   ├── brain.py                # Token tracking na elke API call
+│   ├── skills/runner.py        # on_status callback voor skill-stappen
+│   ├── router/providers/base.py    # input_tokens/output_tokens in ProviderResponse
+│   ├── router/providers/anthropic.py  # Token-info uit response
+│   ├── router/providers/openai_provider.py  # Token-info uit response
 ```
 
-## cli.py — Nieuwe structuur
+## Samenvatting van wijzigingen aan repl.py
 
-De Typer app wordt vereenvoudigd. `henk` zonder argument start de REPL. Een paar subcommands blijven beschikbaar voor gebruik buiten de REPL.
-
-```python
-"""CLI entrypoint voor Henk."""
-
-from __future__ import annotations
-
-from pathlib import Path
-
-import typer
-from rich.console import Console
-
-from henk.config import load_config
-
-app = typer.Typer(
-    help="Henk — Persoonlijke AI Orchestrator",
-    invoke_without_command=True,    # henk zonder argument triggert callback
-)
-console = Console()
-
-
-def _get_data_dir() -> Path:
-    return Path.home() / "henk"
-
-
-def _ensure_initialized() -> Path:
-    """Zorg dat Henk is geïnitialiseerd. Auto-init bij eerste keer."""
-    data_dir = _get_data_dir()
-    if not data_dir.exists():
-        console.print("[dim]Eerste keer? Henk initialiseert zichzelf...[/dim]\n")
-        _do_init(data_dir)
-    return data_dir
-
-
-def _do_init(data_dir: Path) -> None:
-    """Voer de initialisatie uit (gedeelde logica)."""
-    import shutil
-
-    dirs = [
-        data_dir / "memory" / "active",
-        data_dir / "memory" / "episodes",
-        data_dir / "memory" / ".staged" / "pending",
-        data_dir / "memory" / ".staged" / "archive",
-        data_dir / "workspace",
-        data_dir / "skills",
-        data_dir / "control",
-        data_dir / "tools" / "user",
-        data_dir / "tools" / "generated",
-        data_dir / "tools" / "external",
-        data_dir / "logs",
-    ]
-    for directory in dirs:
-        directory.mkdir(parents=True, exist_ok=True)
-
-    core_md = data_dir / "memory" / "core.md"
-    if not core_md.exists():
-        core_md.write_text("# Henk — Kerngeheugen\n", encoding="utf-8")
-
-    config_dest = data_dir / "henk.yaml"
-    if not config_dest.exists():
-        default_config = Path(__file__).parent.parent / "henk.yaml.default"
-        if default_config.exists():
-            shutil.copy2(default_config, config_dest)
-
-    for name in ("graceful_stop", "hard_stop"):
-        ctrl = data_dir / "control" / name
-        ctrl.write_text("false", encoding="utf-8")
-
-    console.print("[bold green]Henk is geïnitialiseerd.[/bold green]\n")
-
-
-@app.callback(invoke_without_command=True)
-def main(ctx: typer.Context):
-    """Start Henk. Zonder subcommand = open de chat."""
-    if ctx.invoked_subcommand is not None:
-        return  # Een subcommand is aangeroepen, laat dat afhandelen
-
-    # henk zonder argument = start de REPL
-    data_dir = _ensure_initialized()
-    config = load_config(data_dir)
-
-    if not config.api_key:
-        console.print(
-            f"[red]{config.api_key_env_var} niet gevonden.[/red]\n"
-            "Maak een .env bestand aan met je API key."
-        )
-        raise typer.Exit(code=1)
-
-    from henk.repl import start_repl
-    start_repl(config, console)
-
-
-@app.command()
-def init():
-    """Initialiseer Henk handmatig."""
-    data_dir = _get_data_dir()
-    if data_dir.exists():
-        overwrite = typer.confirm(f"{data_dir} bestaat al. Opnieuw initialiseren?", default=False)
-        if not overwrite:
-            raise typer.Exit()
-    _do_init(data_dir)
-
-
-@app.command()
-def stop(clear: bool = typer.Option(False, "--clear", help="Wis workspace na stop")):
-    """Hard stop vanuit terminal."""
-    data_dir = _get_data_dir()
-    (data_dir / "control" / "hard_stop").write_text("true", encoding="utf-8")
-    if clear:
-        import shutil
-        workspace = data_dir / "workspace"
-        if workspace.exists():
-            for item in workspace.iterdir():
-                if item.is_dir():
-                    shutil.rmtree(item)
-                else:
-                    item.unlink(missing_ok=True)
-        console.print("Henk is gestopt. Werkbestanden gewist.")
-    else:
-        console.print("Henk is gestopt.")
-
-
-@app.command()
-def status():
-    """Toon status vanuit terminal."""
-    from henk.commands import handle_status
-    data_dir = _get_data_dir()
-    config = load_config(data_dir)
-    handle_status(config, console)
-```
-
-## commands.py — Slash-command handlers
-
-Alle slash-command logica op één plek. Zowel de REPL als cli.py gebruiken dezelfde handlers.
+De REPL wordt als volgt aangepast:
 
 ```python
-"""Slash-command definities en handlers."""
+from henk.spinner import Spinner
+from henk.token_tracker import TokenTracker
+from henk.output import print_henk
 
-from __future__ import annotations
+def start_repl(config, console):
+    # ... bestaande init ...
 
-from dataclasses import dataclass
-from typing import Callable
+    spinner = Spinner(console)
+    # Token tracker zit in brain.token_tracker
 
-from rich.console import Console
-
-from henk.config import Config
-
-
-@dataclass
-class SlashCommand:
-    """Definitie van een slash-command."""
-    name: str               # Zonder slash, bijv. "stop"
-    description: str        # Korte beschrijving voor /help en autocomplete
-    handler: str            # Naam van de handler-functie
-
-
-# Alle beschikbare commands
-COMMANDS: list[SlashCommand] = [
-    SlashCommand("stop", "Hard stop — alles stopt direct", "handle_stop"),
-    SlashCommand("pause", "Pauzeer — geen nieuwe taken", "handle_pause"),
-    SlashCommand("resume", "Hervat na pause of stop", "handle_resume"),
-    SlashCommand("status", "Toon status van Henk", "handle_status"),
-    SlashCommand("review", "Dagelijkse memory review", "handle_review"),
-    SlashCommand("config", "Bekijk configuratie", "handle_config"),
-    SlashCommand("help", "Toon beschikbare commands", "handle_help"),
-    SlashCommand("exit", "Sluit Henk af", "handle_exit"),
-    SlashCommand("clear", "Wis het scherm", "handle_clear"),
-    SlashCommand("history", "Toon gespreksgeschiedenis", "handle_history"),
-]
-
-
-def get_command_names() -> list[str]:
-    """Alle command-namen voor autocomplete."""
-    return [f"/{cmd.name}" for cmd in COMMANDS]
-
-
-def handle_stop(config: Config, console: Console, **kwargs) -> str | None:
-    """Hard stop."""
-    control = config.control_dir
-    (control / "hard_stop").write_text("true", encoding="utf-8")
-    console.print("[red]Henk is gestopt.[/red]")
-    return "exit"  # Signaal om de REPL te verlaten
-
-
-def handle_pause(config: Config, console: Console, **kwargs) -> str | None:
-    """Graceful stop."""
-    control = config.control_dir
-    (control / "graceful_stop").write_text("true", encoding="utf-8")
-    console.print("[yellow]Henk is gepauzeerd. Geen nieuwe taken.[/yellow]")
-    return None
-
-
-def handle_resume(config: Config, console: Console, **kwargs) -> str | None:
-    """Hervat na pause of stop."""
-    control = config.control_dir
-    (control / "graceful_stop").write_text("false", encoding="utf-8")
-    (control / "hard_stop").write_text("false", encoding="utf-8")
-    console.print("[green]Henk is hervat.[/green]")
-    return None
-
-
-def handle_status(config: Config, console: Console, **kwargs) -> str | None:
-    """Toon status."""
-    hard = _read_switch(config, "hard_stop")
-    graceful = _read_switch(config, "graceful_stop")
-
-    if hard:
-        state = "[red]gestopt[/red]"
-    elif graceful:
-        state = "[yellow]gepauzeerd[/yellow]"
-    else:
-        state = "[green]normaal[/green]"
-
-    workspace = config.workspace_dir
-    file_count = sum(1 for _ in workspace.rglob("*")) if workspace.exists() else 0
-
-    logs_dir = config.logs_dir
-    latest_log = "geen"
-    if logs_dir.exists():
-        logs = sorted(logs_dir.glob("transcript_*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if logs:
-            latest_log = str(logs[0].name)
-
-    console.print(f"  Kill switch:  {state}")
-    console.print(f"  Workspace:    {file_count} bestanden")
-    console.print(f"  Laatste log:  {latest_log}")
-
-    # Toon provider info als router beschikbaar is
-    router = kwargs.get("router")
-    if router:
-        try:
-            from henk.router.router import ModelRole
-            for role in ModelRole:
-                try:
-                    provider = router.get_provider(role)
-                    console.print(f"  {role.value:10s}  {provider.name}/{provider._model}")
-                except Exception:
-                    console.print(f"  {role.value:10s}  [red]niet beschikbaar[/red]")
-        except ImportError:
-            pass
-
-    return None
-
-
-def handle_review(config: Config, console: Console, **kwargs) -> str | None:
-    """Memory review."""
-    # Importeer en voer de bestaande review-logica uit
-    from henk.memory.store import MemoryStore
-    from henk.memory.staging import StagingManager
-    from henk.memory.scoring import RelevanceScorer
-
-    store = MemoryStore(config.memory_dir)
-    staging = StagingManager(config.memory_dir / ".staged", store)
-
-    pending = staging.list_pending()
-    if not pending:
-        console.print("[dim]Geen openstaande geheugenwijzigingen.[/dim]")
-        return None
-
-    console.print(f"\n[bold]{len(pending)} wijziging(en) wachten op review:[/bold]\n")
-
-    import typer
-    for change in pending:
-        if change.suspicious:
-            console.print(f"  [red]⚠ VERDACHT[/red]")
-        console.print(f"  Type:     {change.change_type.value}")
-        console.print(f"  Herkomst: {change.provenance.value}")
-        console.print(f"  Reden:    {change.reason}")
-        console.print(f"  Inhoud:   {change.proposed_content[:200]}...")
-
-        approved = typer.confirm("  Goedkeuren?", default=not change.suspicious)
-        if approved:
-            staging.approve(change.id)
-            console.print("  [green]✓ Goedgekeurd[/green]\n")
-        else:
-            staging.reject(change.id)
-            console.print("  [red]✗ Afgewezen[/red]\n")
-
-    console.print("[dim]Review afgerond.[/dim]")
-    return None
-
-
-def handle_config(config: Config, console: Console, **kwargs) -> str | None:
-    """Toon configuratie."""
-    console.print(f"  Provider:              {config.provider}")
-    console.print(f"  Model:                 {config.model}")
-    console.print(f"  Max tool-calls:        {config.max_tool_calls}")
-    console.print(f"  Max retries (content): {config.max_retries_content}")
-    console.print(f"  Max retries (tech):    {config.max_retries_technical}")
-    console.print(f"  Data dir:              {config.data_dir}")
-    return None
-
-
-def handle_help(config: Config, console: Console, **kwargs) -> str | None:
-    """Toon beschikbare commands."""
-    console.print("\n[bold]Beschikbare commands:[/bold]\n")
-    for cmd in COMMANDS:
-        console.print(f"  [cyan]/{cmd.name:10s}[/cyan] {cmd.description}")
-    console.print()
-    return None
-
-
-def handle_exit(config: Config, console: Console, **kwargs) -> str | None:
-    """Sluit af."""
-    return "exit"
-
-
-def handle_clear(config: Config, console: Console, **kwargs) -> str | None:
-    """Wis het scherm."""
-    console.clear()
-    return None
-
-
-def handle_history(config: Config, console: Console, **kwargs) -> str | None:
-    """Toon gespreksgeschiedenis."""
-    brain = kwargs.get("brain")
-    if not brain or not brain._history:
-        console.print("[dim]Nog geen gesprek in deze sessie.[/dim]")
-        return None
-
-    console.print("\n[bold]Gespreksgeschiedenis:[/bold]\n")
-    for msg in brain._history:
-        role = msg.get("role", "?")
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            preview = content[:150]
-            if role == "user":
-                console.print(f"  [bold]Jij:[/bold] {preview}")
-            else:
-                console.print(f"  [cyan]Henk:[/cyan] {preview}")
-    console.print()
-    return None
-
-
-def _read_switch(config: Config, name: str) -> bool:
-    path = config.control_dir / name
-    if path.exists():
-        return path.read_text(encoding="utf-8").strip().lower() == "true"
-    return False
-
-
-def dispatch_command(command: str, config: Config, console: Console, **kwargs) -> str | None:
-    """Voer een slash-command uit. Return 'exit' om de REPL te verlaten, None om door te gaan."""
-    cmd_name = command.lstrip("/").strip().split()[0].lower()
-
-    handlers = {
-        "stop": handle_stop,
-        "pause": handle_pause,
-        "resume": handle_resume,
-        "status": handle_status,
-        "review": handle_review,
-        "config": handle_config,
-        "help": handle_help,
-        "exit": handle_exit,
-        "clear": handle_clear,
-        "history": handle_history,
-    }
-
-    handler = handlers.get(cmd_name)
-    if handler:
-        return handler(config, console, **kwargs)
-
-    console.print(f"[red]Onbekend command: /{cmd_name}[/red] — typ /help voor opties.")
-    return None
-```
-
-## repl.py — De REPL met prompt_toolkit
-
-Dit is het hart van de nieuwe UX.
-
-```python
-"""Interactieve REPL met prompt_toolkit autocomplete."""
-
-from __future__ import annotations
-
-from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import WordCompleter
-from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.styles import Style
-from rich.console import Console
-
-from henk.commands import dispatch_command, get_command_names
-from henk.config import Config
-
-
-# Prompt styling
-PROMPT_STYLE = Style.from_dict({
-    "prompt": "bold cyan",
-})
-
-
-def _build_completer() -> WordCompleter:
-    """Bouw autocomplete voor slash-commands."""
-    return WordCompleter(
-        get_command_names(),
-        sentence=True,          # Match hele input, niet per woord
-        meta_dict={
-            "/stop": "Hard stop — alles stopt direct",
-            "/pause": "Pauzeer — geen nieuwe taken",
-            "/resume": "Hervat na pause of stop",
-            "/status": "Toon status van Henk",
-            "/review": "Dagelijkse memory review",
-            "/config": "Bekijk configuratie",
-            "/help": "Toon beschikbare commands",
-            "/exit": "Sluit Henk af",
-            "/clear": "Wis het scherm",
-            "/history": "Toon gespreksgeschiedenis",
-        },
-    )
-
-
-def start_repl(config: Config, console: Console) -> None:
-    """Start de interactieve REPL."""
-    # Initialiseer alle componenten (bestaande logica uit cli.py chat)
-    from henk.brain import Brain
-    from henk.gateway import Gateway, KillSwitchActive
-    from henk.react_loop import ReactLoop
-    from henk.transcript import TranscriptWriter
-
-    # Import tool en memory componenten
-    # (pas aan op basis van wat er in de huidige codebase staat)
-    from henk.security.proxy import SecurityProxy
-    from henk.tools.web_search import WebSearchTool
-    from henk.tools.file_manager import FileManagerTool
-    from henk.tools.code_runner import CodeRunnerTool
-
-    # Initialiseer componenten
-    transcript = TranscriptWriter(config.logs_dir)
-
-    # Router (v0.4)
-    try:
-        from henk.router.router import ModelRouter
-        router = ModelRouter(config)
-    except ImportError:
-        router = None
-
-    # Memory (v0.3)
-    try:
-        from henk.memory.store import MemoryStore
-        from henk.memory.staging import StagingManager
-        from henk.memory.retrieval import MemoryRetrieval
-        store = MemoryStore(config.memory_dir)
-        staging = StagingManager(config.memory_dir / ".staged", store)
-        retrieval = MemoryRetrieval(store, config) if config.memory_vector_enabled else None
-    except ImportError:
-        staging = None
-        retrieval = None
-
-    # Brain
-    brain = Brain(config, router=router, memory_retrieval=retrieval)
-    gateway = Gateway(config, brain, transcript)
-
-    # Tools
-    proxy = SecurityProxy(config.proxy_allowed_domains, config.proxy_allowed_methods)
-    tools = {
-        "web_search": WebSearchTool(proxy=proxy, timeout_seconds=config.web_search_timeout_seconds),
-        "file_manager": FileManagerTool([str(p) for p in config.file_manager_read_roots], config.workspace_dir),
-        "code_runner": CodeRunnerTool(config.workspace_dir, config.code_runner_timeout_seconds),
-    }
-
-    # Memory write tool (v0.3)
-    if staging:
-        try:
-            from henk.tools.memory_write import MemoryWriteTool
-            tools["memory_write"] = MemoryWriteTool(staging=staging)
-        except ImportError:
-            pass
-
-    # Reminder tool (v0.5)
-    try:
-        from henk.heartbeat import Heartbeat, ReminderTool
-        heartbeat = Heartbeat(interval_seconds=config.heartbeat_interval)
-
-        def on_reminder(message: str):
-            console.print(f"\n[yellow]⏰ {message}[/yellow]\n")
-
-        heartbeat.start(on_reminder)
-        tools["reminder"] = ReminderTool(heartbeat=heartbeat)
-    except ImportError:
-        heartbeat = None
-
-    # Skill selector (v0.5)
-    try:
-        from henk.skills.selector import SkillSelector
-        from henk.skills.runner import SkillRunner
-        skill_selector = SkillSelector(config.skills_dir, router) if router else None
-        skill_runner = SkillRunner(brain, gateway, None)  # ReactLoop wordt hieronder gezet
-    except ImportError:
-        skill_selector = None
-        skill_runner = None
-
-    react_loop = ReactLoop(brain=brain, gateway=gateway, tools=tools)
-    gateway.set_react_loop(react_loop)
-
-    if skill_runner:
-        skill_runner._react_loop = react_loop
-
-    # Kill switch check
-    hard = config.control_dir / "hard_stop"
-    if hard.exists() and hard.read_text(encoding="utf-8").strip().lower() == "true":
-        console.print("[red]Henk is gestopt. Typ /resume om te hervatten.[/red]")
-
-    # Begroeting
-    try:
-        greeting = gateway.get_greeting()
-        console.print(f"[cyan]{greeting}[/cyan]\n")
-    except Exception:
-        console.print("[cyan]Hoi. Wat kan ik voor je doen?[/cyan]\n")
-
-    # Prompt session met autocomplete
     session = PromptSession(
         completer=_build_completer(),
         style=PROMPT_STYLE,
-        complete_while_typing=False,    # Alleen autocomplete na Tab of bij /
+        key_bindings=_build_key_bindings(),
+        multiline=True,
+        prompt_continuation="  ",
     )
 
-    # Context voor slash-command handlers
-    command_context = {
-        "brain": brain,
-        "router": router,
-        "gateway": gateway,
-        "react_loop": react_loop,
-    }
+    while True:
+        user_input = session.prompt(HTML("<prompt>❯ </prompt>"))
+        stripped = user_input.strip()
+        if not stripped:
+            continue
 
-    # Main loop
-    try:
-        while True:
-            try:
-                user_input = session.prompt(
-                    HTML("<prompt>❯ </prompt>"),
-                    completer=_build_completer(),
-                )
-            except EOFError:
+        if stripped.startswith("/"):
+            result = dispatch_command(stripped, config, console, **command_context)
+            if result == "exit":
                 break
-            except KeyboardInterrupt:
-                continue  # Ctrl+C in prompt = wis input, niet afsluiten
+            continue
 
-            stripped = user_input.strip()
-            if not stripped:
-                continue
-
-            # Slash-command?
-            if stripped.startswith("/"):
-                result = dispatch_command(stripped, config, console, **command_context)
-                if result == "exit":
-                    break
-                continue
-
-            # Normaal bericht naar Henk
-            try:
-                response = gateway.process(stripped)
-                if response:
-                    console.print(f"[cyan]{response}[/cyan]\n")
-            except KillSwitchActive as e:
-                console.print(f"[red]Henk is gestopt ({e.switch_type}). Typ /resume om te hervatten.[/red]")
-            except Exception:
-                console.print("[red]Ik kan even niet bij mijn brein. Check je API key of internetverbinding.[/red]\n")
-
-    except KeyboardInterrupt:
-        pass
-
-    # Cleanup
-    if heartbeat:
-        heartbeat.stop()
-
-    # Sessie-samenvatting (v0.5)
-    if staging and brain._history:
         try:
-            summary = brain.summarize_session()
-            if summary:
-                from henk.memory.models import StagedChange, ChangeType, Provenance
-                from datetime import datetime
-                import uuid
-                change = StagedChange(
-                    id=uuid.uuid4().hex[:8],
-                    change_type=ChangeType.CREATE,
-                    target_item_id=None,
-                    proposed_content=summary,
-                    proposed_description=f"Sessie-samenvatting {datetime.now().strftime('%Y-%m-%d')}",
-                    provenance=Provenance.AGENT_SUGGESTED,
-                    reason="Automatische sessie-samenvatting",
-                    timestamp=datetime.now(),
-                )
-                staging.stage_change(change)
-                console.print("[dim]Sessie-samenvatting opgeslagen in staging.[/dim]")
+            spinner.start("Henk denkt...")
+            response = gateway.process(stripped, on_status=spinner.update)
+            spinner.stop()
+
+            if response:
+                print_henk(console, response, brain.token_tracker)
+        except KillSwitchActive as e:
+            spinner.stop()
+            console.print(f"[red]Henk is gestopt ({e.switch_type}). Typ /resume.[/red]")
         except Exception:
-            pass
-
-    console.print(f"\n[dim]Transcript: {transcript.file_path.name}[/dim]")
-```
-
-## Autocomplete gedrag
-
-De autocomplete moet zo werken:
-
-- Gebruiker typt `/` → dropdown verschijnt met alle commands + beschrijvingen
-- Gebruiker typt `/st` → dropdown filtert naar `/status`, `/stop`
-- Tab of Enter selecteert
-- Gewone tekst (zonder `/`) triggert geen autocomplete
-
-Dit wordt bereikt door `WordCompleter` met `sentence=True` en `meta_dict` voor de beschrijvingen. `complete_while_typing=False` voorkomt dat autocomplete bij normaal typen verschijnt — het triggert alleen bij `/`.
-
-Let op: `complete_while_typing=False` betekent dat de gebruiker Tab moet drukken voor suggesties. Als je wilt dat suggesties automatisch verschijnen zodra `/` wordt getypt, gebruik dan een custom `Completer`:
-
-```python
-from prompt_toolkit.completion import Completer, Completion
-
-class SlashCompleter(Completer):
-    """Autocomplete die alleen triggert bij /."""
-
-    def __init__(self, commands: dict[str, str]):
-        self._commands = commands  # {"/stop": "Hard stop — alles stopt direct", ...}
-
-    def get_completions(self, document, complete_event):
-        text = document.text_before_cursor
-        if not text.startswith("/"):
-            return
-
-        for cmd, desc in self._commands.items():
-            if cmd.startswith(text):
-                yield Completion(
-                    cmd,
-                    start_position=-len(text),
-                    display_meta=desc,
-                )
-```
-
-Gebruik deze `SlashCompleter` in plaats van `WordCompleter` als je automatische suggesties wilt bij `/`.
-
-## Prompt-stijl
-
-Het prompt-karakter: `❯` (Unicode right-pointing triangle). Dit is wat moderne CLI tools gebruiken. Als het terminal-compatibiliteitsproblemen geeft op Windows, fallback naar `>`.
-
-```python
-try:
-    # Test of het Unicode karakter werkt
-    "❯".encode(console.encoding or "utf-8")
-    PROMPT_CHAR = "❯"
-except (UnicodeEncodeError, LookupError):
-    PROMPT_CHAR = ">"
-```
-
-## Migratie van bestaande chat-logica
-
-De volledige chat-logica die nu in `cli.py` staat onder het `chat` command verhuist naar `repl.py`. De `chat` command in cli.py kan blijven als alias:
-
-```python
-@app.command(hidden=True)  # Verborgen — henk zonder argument is de primaire manier
-def chat():
-    """Start chat (alias — gebruik gewoon 'henk')."""
-    data_dir = _ensure_initialized()
-    config = load_config(data_dir)
-    from henk.repl import start_repl
-    start_repl(config, console)
+            spinner.stop()
+            console.print("[red]Ik kan even niet bij mijn brein.[/red]\n")
 ```
 
 ## Tests
 
-### test_commands.py
+### test_spinner.py
 
-- dispatch_command(”/help”, …) print commands
-- dispatch_command(”/exit”, …) returned “exit”
-- dispatch_command(”/stop”, …) schrijft hard_stop en returned “exit”
-- dispatch_command(”/pause”, …) schrijft graceful_stop
-- dispatch_command(”/resume”, …) reset beide switches
-- dispatch_command(”/onbekend”, …) toont foutmelding
-- get_command_names() bevat alle verwachte commands
+- start() toont spinner
+- update() verandert het bericht
+- stop() stopt de spinner
+- Dubbel stop() crasht niet
 
-### test_repl.py
+### test_token_tracker.py
 
-- Slash-commands worden herkend (begint met /)
-- Lege input wordt genegeerd
-- Niet-slash input wordt doorgegeven aan gateway.process()
-- SlashCompleter geeft alleen suggesties bij /
-- SlashCompleter filtert op getypte tekst
+- add() telt tokens op
+- total geeft input + output
+- format() geeft “1.2k tokens” voor > 1000
+- format() geeft “847 tokens” voor < 1000
+- Begint op 0
+
+### test_output.py
+
+- print_henk() rendert Markdown
+- print_henk() valt terug naar platte tekst bij parse-fout
+- Token-teller is rechts uitgelijnd
 
 ## Volgorde van bouwen
 
-1. **commands.py** — alle handlers en dispatch logica
-1. **repl.py** — REPL met prompt_toolkit en autocomplete
-1. **cli.py aanpassen** — `invoke_without_command=True`, auto-init, verplaats chat-logica
+1. **spinner.py** — Spinner class
+1. **token_tracker.py** — TokenTracker class
+1. **output.py** — print_henk() helper
+1. **router/providers/base.py** — voeg input_tokens/output_tokens toe aan ProviderResponse
+1. **router/providers/anthropic.py + openai_provider.py** — token-info uit response
+1. **brain.py** — token tracking na elke API call
+1. **react_loop.py** — on_status callback
+1. **gateway.py** — on_status propagatie
+1. **skills/runner.py** — on_status bij skill-stappen
+1. **repl.py** — alles integreren: spinner, markdown, multi-line, token-teller
 1. **Tests**
-1. **Opruimen** — verwijder dubbele logica uit cli.py die nu in commands.py en repl.py zit
 
 ## Samenvatting
 
-Deze wijziging verandert:
+Vier UX-verbeteringen:
 
-1. `henk` = start direct de chat (auto-init)
-1. Slash-commands in de chat met autocomplete en beschrijvingen
-1. `henk stop` en `henk status` werken ook vanuit de terminal
-1. prompt_toolkit voor moderne input-ervaring
-1. Alle command-logica gecentreerd in commands.py
-1. REPL-logica in repl.py, cli.py wordt dun
+1. **Spinner** — “Henk denkt…”, “web_search: weer Amsterdam”, “Stap 2/5: Bronnen zoeken”
+1. **Markdown** — code highlighting, lijsten, kopjes in Henk’s antwoorden
+1. **Multi-line** — Shift+Enter = nieuwe regel, Enter = versturen
+1. **Token-teller** — “sessie: 2.8k tokens” rechts uitgelijnd na elk antwoord
 
 **Referenties:**
 
-- `CLAUDE.md` — architectuurprincipes
-- prompt_toolkit documentatie: https://python-prompt-toolkit.readthedocs.io/
+- Rich Markdown: https://rich.readthedocs.io/en/latest/markdown.html
+- Rich Status/Spinner: https://rich.readthedocs.io/en/latest/status.html
+- prompt_toolkit key bindings: https://python-prompt-toolkit.readthedocs.io/en/latest/pages/advanced_topics/key_bindings.html
