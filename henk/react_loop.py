@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from henk.gateway import Gateway, LoopDecision
 from henk.tools.base import BaseTool, ErrorType, ToolError, ToolResult
@@ -26,12 +26,14 @@ class ReactLoop:
             return "file_manager", {"action": "list", **mapped_params}
         return tool_name, mapped_params
 
-    def run(self, user_message: str) -> str:
+    def run(self, user_message: str, on_status: Callable[[str], None] | None = None) -> str:
         """Voer een volledige ReAct-cyclus uit voor een gebruikersbericht."""
         self._gateway.reset_counters()
 
         def execute_tool(tool_name: str, params: dict[str, Any]) -> ToolResult:
             mapped_name, mapped_params = self._map_tool(tool_name, params)
+            if on_status:
+                on_status(f"{mapped_name}: {self._tool_detail(mapped_name, mapped_params)}")
 
             decision = self._gateway.check_tool_call(mapped_name, mapped_params)
             if decision.decision != LoopDecision.ALLOW:
@@ -66,6 +68,23 @@ class ReactLoop:
             result = tool.execute(**mapped_params)
             self._gateway.register_tool_result(result)
             self._gateway.log_tool_result(mapped_name, result)
+            if on_status:
+                on_status("Henk denkt...")
             return result
 
         return self._brain.run_with_tools(user_message, execute_tool)
+
+    def _tool_detail(self, tool_name: str, params: dict[str, Any]) -> str:
+        if tool_name == "web_search":
+            return str(params.get("query", ""))[:50]
+        if tool_name == "file_manager":
+            action = params.get("action", "")
+            path = params.get("path", "")
+            return f"{action} {path}"[:50]
+        if tool_name == "code_runner":
+            return str(params.get("language", "code"))
+        if tool_name == "memory_write":
+            return str(params.get("title", ""))[:50]
+        if tool_name == "reminder":
+            return str(params.get("message", ""))[:50]
+        return ""

@@ -36,6 +36,9 @@ class OpenAICompatibleProvider(BaseProvider):
 
         response = self._client.chat.completions.create(**kwargs)
         choice = response.choices[0]
+        usage = getattr(response, "usage", None)
+        input_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
+        output_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
 
         if choice.message.tool_calls:
             tool_calls = [
@@ -46,9 +49,21 @@ class OpenAICompatibleProvider(BaseProvider):
                 )
                 for tool_call in choice.message.tool_calls
             ]
-            return ProviderResponse(text=None, tool_calls=tool_calls, raw=response)
+            return ProviderResponse(
+                text=None,
+                tool_calls=tool_calls,
+                raw=response,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
 
-        return ProviderResponse(text=choice.message.content, tool_calls=None, raw=response)
+        return ProviderResponse(
+            text=choice.message.content,
+            tool_calls=None,
+            raw=response,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
 
     def supports_tools(self) -> bool:
         return True

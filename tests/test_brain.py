@@ -126,3 +126,19 @@ def test_summarize_session_uses_history():
     assert summary == "Samenvatting"
     prompt = provider.calls[1]["messages"][0]["content"]
     assert "Gebruiker: wat deden we?" in prompt
+
+
+def test_brain_tracks_tokens_from_provider_responses():
+    provider = DummyProvider(
+        [
+            ProviderResponse(text="a", tool_calls=None, raw=None, input_tokens=10, output_tokens=5),
+            ProviderResponse(text="b", tool_calls=None, raw=None, input_tokens=4, output_tokens=3),
+        ]
+    )
+    brain = Brain(_make_config(), router=DummyRouter(provider))
+    brain.think("eerste")
+    brain.think("tweede")
+
+    assert brain.token_tracker.total_input == 14
+    assert brain.token_tracker.total_output == 8
+    assert brain.token_tracker.total == 22

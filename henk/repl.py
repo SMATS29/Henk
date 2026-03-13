@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
 from rich.console import Console
 
@@ -16,11 +17,13 @@ from henk.config import Config
 from henk.gateway import Gateway, KillSwitchActive
 from henk.heartbeat import Heartbeat, ReminderTool
 from henk.memory import ChangeType, MemoryRetrieval, MemoryStore, Provenance, RelevanceScorer, StagedChange, StagingManager
+from henk.output import print_henk
 from henk.react_loop import ReactLoop
 from henk.requirements import Requirements, RequirementsStatus
 from henk.router import ModelRouter
 from henk.security.proxy import SecurityProxy
 from henk.skills import SkillRunner, SkillSelector
+from henk.spinner import Spinner
 from henk.tools.code_runner import CodeRunnerTool
 from henk.tools.file_manager import FileManagerTool
 from henk.tools.memory_write import MemoryWriteTool
@@ -63,6 +66,20 @@ def _build_memory_services(config: Config):
     return store, staging, scorer, retrieval
 
 
+def _build_key_bindings() -> KeyBindings:
+    bindings = KeyBindings()
+
+    @bindings.add("enter")
+    def handle_enter(event) -> None:
+        event.current_buffer.validate_and_handle()
+
+    @bindings.add("s-enter")
+    def handle_shift_enter(event) -> None:
+        event.current_buffer.insert_text("\n")
+
+    return bindings
+
+
 def start_repl(config: Config, console: Console) -> None:
     _, staging, _, retrieval = _build_memory_services(config)
     transcript = TranscriptWriter(config.logs_dir)
@@ -90,17 +107,25 @@ def start_repl(config: Config, console: Console) -> None:
     react_loop = ReactLoop(brain=brain, gateway=gateway, tools=tools)
     skill_runner = SkillRunner(brain, gateway, react_loop)
     gateway.set_react_loop(react_loop)
+    spinner = Spinner(console)
 
     hard = config.control_dir / "hard_stop"
     if hard.exists() and hard.read_text(encoding="utf-8").strip().lower() == "true":
         console.print("[red]Henk is gestopt. Typ /resume om te hervatten.[/red]")
 
     try:
-        console.print(f"[cyan]{gateway.get_greeting()}[/cyan]\n")
+        print_henk(console, gateway.get_greeting(), brain.token_tracker)
     except Exception:
-        console.print("[cyan]Hoi. Wat kan ik voor je doen?[/cyan]\n")
+        print_henk(console, "Hoi. Wat kan ik voor je doen?", brain.token_tracker)
 
-    session = PromptSession(completer=_build_completer(), style=PROMPT_STYLE, complete_while_typing=False)
+    session = PromptSession(
+        completer=_build_completer(),
+        style=PROMPT_STYLE,
+        complete_while_typing=False,
+        key_bindings=_build_key_bindings(),
+        multiline=True,
+        prompt_continuation="  ",
+    )
     command_context = {"brain": brain, "router": router, "gateway": gateway, "react_loop": react_loop}
 
     try:
@@ -129,16 +154,28 @@ def start_repl(config: Config, console: Console) -> None:
                     if requirements.skill_name and skill_selector:
                         skill = skill_selector.select(requirements.task_description)
                         if skill:
-                            response = skill_runner.run(skill, requirements)
+                            spinner.start("Henk denkt...")
+                            response = skill_runner.run(skill, requirements, on_status=spinner.update)
+                            spinner.stop()
                         else:
-                            response = react_loop.run(requirements.task_description)
+                            spinner.start("Henk denkt...")
+                            response = react_loop.run(requirements.task_description, on_status=spinner.update)
+                            spinner.stop()
                     else:
-                        response = react_loop.run(requirements.task_description + "\n\nEisen:\n" + requirements.specifications)
+                        spinner.start("Henk denkt...")
+                        response = react_loop.run(
+                            requirements.task_description + "\n\nEisen:\n" + requirements.specifications,
+                            on_status=spinner.update,
+                        )
+                        spinner.stop()
                     requirements.complete(response)
                     brain.active_requirements = None
                 elif brain.active_requirements:
+                    spinner.start("Henk denkt...")
                     response = brain.refine_requirements(stripped, brain.active_requirements)
+                    spinner.stop()
                 else:
+                    spinner.start("Henk denkt...")
                     kind = brain.classify_input(stripped)
                     if kind == "taak":
                         req = Requirements(task_description=stripped)
@@ -149,13 +186,16 @@ def start_repl(config: Config, console: Console) -> None:
                         brain.active_requirements = req
                         response = brain.refine_requirements(stripped, req)
                     else:
-                        response = gateway.process(stripped)
+                        response = gateway.process(stripped, on_status=spinner.update)
+                    spinner.stop()
 
                 if response:
-                    console.print(f"[cyan]{response}[/cyan]\n")
+                    print_henk(console, response, brain.token_tracker)
             except KillSwitchActive as error:
+                spinner.stop()
                 console.print(f"[red]Henk is gestopt ({error.switch_type}). Typ /resume om te hervatten.[/red]")
             except Exception:
+                spinner.stop()
                 console.print("[red]Ik kan even niet bij mijn brein. Check je API key of internetverbinding.[/red]\n")
     except KeyboardInterrupt:
         pass

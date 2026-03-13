@@ -54,7 +54,7 @@ def test_gateway_uses_react_loop_when_set(config, mock_brain):
     response = gateway.process("test bericht")
 
     assert response == "Via loop"
-    react_loop.run.assert_called_once_with("test bericht")
+    react_loop.run.assert_called_once_with("test bericht", on_status=None)
 
 
 def test_gateway_ignores_empty_input(config, mock_brain):

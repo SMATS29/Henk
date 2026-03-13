@@ -21,6 +21,8 @@ class ProviderResponse:
     text: str | None
     tool_calls: list[ToolCall] | None
     raw: Any = None
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 class BaseProvider(ABC):

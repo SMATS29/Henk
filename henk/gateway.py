@@ -8,6 +8,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from typing import Callable
 
 from henk.brain import Brain
 from henk.config import Config
@@ -145,7 +146,7 @@ class Gateway:
         """Koppel de ReAct-loop aan de Gateway."""
         self._react_loop = react_loop
 
-    def process(self, user_message: str) -> str:
+    def process(self, user_message: str, on_status: Callable[[str], None] | None = None) -> str:
         """Verwerk een gebruikersbericht via de ReAct-loop."""
         active_switch = self.check_kill_switches()
         if active_switch:
@@ -159,7 +160,7 @@ class Gateway:
         if self._react_loop is None:
             response = self._brain.think(user_message)
         else:
-            response = self._react_loop.run(user_message)
+            response = self._react_loop.run(user_message, on_status=on_status)
         self._transcript.write("assistant", response)
         return response
 

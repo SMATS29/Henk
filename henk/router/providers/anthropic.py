@@ -40,9 +40,25 @@ class AnthropicProvider(BaseProvider):
             elif hasattr(block, "text"):
                 text_parts.append(block.text)
 
+        usage = getattr(response, "usage", None)
+        input_tokens = getattr(usage, "input_tokens", 0) if usage else 0
+        output_tokens = getattr(usage, "output_tokens", 0) if usage else 0
+
         if tool_calls:
-            return ProviderResponse(text=None, tool_calls=tool_calls, raw=response)
-        return ProviderResponse(text="".join(text_parts).strip(), tool_calls=None, raw=response)
+            return ProviderResponse(
+                text=None,
+                tool_calls=tool_calls,
+                raw=response,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+        return ProviderResponse(
+            text="".join(text_parts).strip(),
+            tool_calls=None,
+            raw=response,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
 
     def supports_tools(self) -> bool:
         return True

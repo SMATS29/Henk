@@ -9,6 +9,7 @@ from henk.memory.retrieval import MemoryRetrieval
 from henk.requirements import Requirements
 from henk.router import ModelRole, ModelRouter
 from henk.skills.selector import SkillSelector
+from henk.token_tracker import TokenTracker
 
 
 SYSTEM_PROMPT = """\
@@ -70,6 +71,7 @@ class Brain:
         self._memory_retrieval = memory_retrieval
         self._skill_selector = skill_selector
         self._active_requirements: Requirements | None = None
+        self.token_tracker = TokenTracker()
 
     @property
     def active_requirements(self) -> Requirements | None:
@@ -89,6 +91,7 @@ class Brain:
             messages=[{"role": "user", "content": GREETING_INSTRUCTION}],
             system=SYSTEM_PROMPT,
         )
+        self._track_response(response)
         return response.text or "Hoi."
 
     def think(self, user_message: str, *, include_in_history: bool = True) -> str:
@@ -96,6 +99,7 @@ class Brain:
         messages = self._history.copy()
         messages.append({"role": "user", "content": user_message})
         response = provider.chat(messages=messages, system=self._build_system_prompt(user_message))
+        self._track_response(response)
         answer = response.text or "Ik heb nu geen antwoord."
 
         if include_in_history:
@@ -119,6 +123,7 @@ class Brain:
             ],
             system="Classificeer berichten. Antwoord alleen met 'taak' of 'gesprek'.",
         )
+        self._track_response(response)
         return "taak" if "taak" in (response.text or "").strip().lower() else "gesprek"
 
     def refine_requirements(self, user_input: str, requirements: Requirements) -> str:
@@ -136,6 +141,7 @@ class Brain:
         )
 
         response = provider.chat(messages=self._history + [{"role": "user", "content": prompt}], system=system)
+        self._track_response(response)
         answer = response.text or ""
         if "[CONFIRMED]" in answer:
             requirements.confirm()
@@ -156,6 +162,7 @@ class Brain:
 
         while True:
             response = provider.chat(messages=messages, system=system, tools=tools or self._anthropic_tools())
+            self._track_response(response)
             if not response.tool_calls:
                 answer = response.text or "Ik heb nu geen antwoord."
                 self._history.append({"role": "assistant", "content": answer})
@@ -186,7 +193,11 @@ class Brain:
             f"{transcript}"
         )
         response = provider.chat(messages=[{"role": "user", "content": prompt}], system=SYSTEM_PROMPT)
+        self._track_response(response)
         return response.text
+
+    def _track_response(self, response: Any) -> None:
+        self.token_tracker.add(getattr(response, "input_tokens", 0), getattr(response, "output_tokens", 0))
 
     def _build_system_prompt(self, user_message: str) -> str:
         memory_context = ""
