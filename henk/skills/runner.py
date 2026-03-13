@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from henk.requirements import Requirements
 from henk.skills.models import Skill, SkillRun, SkillStep, StepStatus
@@ -15,18 +15,20 @@ class SkillRunner:
         self._gateway = gateway
         self._react_loop = react_loop
 
-    def run(self, skill: Skill, requirements: Requirements) -> str:
+    def run(self, skill: Skill, requirements: Requirements, on_status: Callable[[str], None] | None = None) -> str:
         skill_run = SkillRun(skill=skill, started_at=datetime.now())
         results: list[str] = []
 
         while skill_run.active_step is not None:
             step = skill_run.active_step
+            if on_status:
+                on_status(f"Stap {step.number}/{len(skill.steps)}: {step.title}")
             step.status = StepStatus.ACTIVE
             self._gateway.log_skill_event("step.started", skill.name, step.number, step.title)
 
             try:
                 step_prompt = self._build_step_prompt(step, requirements, results)
-                result = self._react_loop.run(step_prompt)
+                result = self._react_loop.run(step_prompt, on_status=on_status)
 
                 step.status = StepStatus.COMPLETED
                 step.result = result

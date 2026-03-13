@@ -120,3 +120,22 @@ def test_registers_tool_errors(tmp_path):
     out = loop.run("hallo")
     assert out == "klaar"
     assert gw.technical_retry_count == 1
+
+
+def test_updates_status_during_tool_calls(tmp_path):
+    gw = _make_gateway(tmp_path)
+    brain = MagicMock()
+
+    def run_with_tools(user_message, executor):
+        result = executor("web_search", {"query": "amsterdam"})
+        assert result.success is True
+        return "klaar"
+
+    brain.run_with_tools.side_effect = run_with_tools
+    loop = ReactLoop(brain, gw, {"web_search": DummyTool(ToolResult(True, "ok", ""))})
+
+    updates: list[str] = []
+    out = loop.run("hallo", on_status=updates.append)
+    assert out == "klaar"
+    assert updates[0].startswith("web_search: amsterdam")
+    assert updates[-1] == "Henk denkt..."
