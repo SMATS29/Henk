@@ -6,7 +6,22 @@
 # =============================================================================
 
 HENK_DIR="$HOME/henk"
-USER_BIN=$(python3 -c "import sysconfig; print(sysconfig.get_path('scripts', 'posix_user'))" 2>/dev/null || echo "$HOME/.local/bin")
+USER_BIN_DIRS=(
+    "$HOME/.local/bin"
+    "$HOME/Library/Python/3.11/bin"
+    "$HOME/Library/Python/3.12/bin"
+    "$HOME/Library/Python/3.13/bin"
+    "$HOME/Library/Python/3.14/bin"
+)
+
+for PYTHON_CMD in python3.14 python3.13 python3.12 python3.11 python3 python; do
+    if command -v "$PYTHON_CMD" >/dev/null 2>&1; then
+        DETECTED_BIN="$("$PYTHON_CMD" -c "import sysconfig; print(sysconfig.get_path('scripts', 'posix_user'))" 2>/dev/null || true)"
+        if [ -n "$DETECTED_BIN" ]; then
+            USER_BIN_DIRS+=("$DETECTED_BIN")
+        fi
+    fi
+done
 
 clear
 echo "=============================================="
@@ -77,29 +92,66 @@ echo ""
 # --------------------------------------------------------------------------
 echo "[ 2/3 ] Henk pakket verwijderen..."
 
-# Kies het juiste pip commando
-if command -v pip3 &>/dev/null; then
-    PIP="pip3"
-elif command -v pip &>/dev/null; then
-    PIP="pip"
-else
-    PIP="python3 -m pip"
-fi
+PACKAGE_REMOVED=0
+PACKAGE_FOUND=0
 
-if $PIP show henk &>/dev/null 2>&1; then
-    if $PIP uninstall henk -y --quiet 2>&1; then
-        echo "  Pakket verwijderd. OK"
-    else
-        echo "  Pakket verwijderen mislukt (mogelijk al niet geïnstalleerd)."
+for PYTHON_CMD in python3.14 python3.13 python3.12 python3.11 python3 python; do
+    if ! command -v "$PYTHON_CMD" >/dev/null 2>&1; then
+        continue
     fi
-else
-    echo "  Henk pakket was al niet geïnstalleerd. OK"
+
+    if "$PYTHON_CMD" -m pip show henk >/dev/null 2>&1; then
+        PACKAGE_FOUND=1
+        if "$PYTHON_CMD" -m pip uninstall henk -y --quiet >/dev/null 2>&1; then
+            PACKAGE_REMOVED=1
+        fi
+    fi
+done
+
+if [ "$PACKAGE_FOUND" -eq 0 ]; then
+    for PIP_CMD in pip3 pip; do
+        if ! command -v "$PIP_CMD" >/dev/null 2>&1; then
+            continue
+        fi
+
+        if "$PIP_CMD" show henk >/dev/null 2>&1; then
+            PACKAGE_FOUND=1
+            if "$PIP_CMD" uninstall henk -y --quiet >/dev/null 2>&1; then
+                PACKAGE_REMOVED=1
+            fi
+        fi
+    done
 fi
 
-# Verwijder ook het binaire bestand als het nog bestaat
-if [ -f "$USER_BIN/henk" ]; then
-    rm -f "$USER_BIN/henk"
+if [ "$PACKAGE_REMOVED" -eq 1 ]; then
+    echo "  Pakket verwijderd. OK"
+elif [ "$PACKAGE_FOUND" -eq 1 ]; then
+    echo "  Pakket gevonden, maar verwijderen gaf geen bruikbare output. Controleer eventueel handmatig."
+else
+    echo "  Henk pakket was al niet geïnstalleerd of pip ontbreekt. OK"
+fi
+
+BINARY_REMOVED=0
+SEEN_BIN_DIRS=""
+for USER_BIN in "${USER_BIN_DIRS[@]}"; do
+    [ -n "$USER_BIN" ] || continue
+    case ":$SEEN_BIN_DIRS:" in
+        *":$USER_BIN:"*)
+            continue
+            ;;
+    esac
+    SEEN_BIN_DIRS="${SEEN_BIN_DIRS}:$USER_BIN"
+
+    if [ -f "$USER_BIN/henk" ]; then
+        rm -f "$USER_BIN/henk"
+        BINARY_REMOVED=1
+    fi
+done
+
+if [ "$BINARY_REMOVED" -eq 1 ]; then
     echo "  Uitvoerbaar bestand verwijderd. OK"
+else
+    echo "  Geen los uitvoerbaar bestand gevonden. OK"
 fi
 echo ""
 

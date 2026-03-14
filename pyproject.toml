@@ -23,5 +23,9 @@ dependencies = [
 [project.scripts]
 henk = "henk.cli:app"
 
+[tool.setuptools.packages.find]
+include = ["henk*"]
+exclude = ["skills*", "tests*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -40,6 +40,7 @@ def _configure_wizard(monkeypatch, tmp_path):
     monkeypatch.setattr(installer, "ENV_EXAMPLE", env_example)
     monkeypatch.setattr(installer, "HENK_DIR", henk_dir)
     monkeypatch.setattr(installer, "_user_scripts_dir", lambda: scripts_dir)
+    monkeypatch.setattr(installer, "_ensure_terminal_command", lambda state, scripts_dir, print_func: None)
     return repo_dir, env_file, henk_dir, scripts_dir
 
 
@@ -127,6 +128,7 @@ def test_bootstrap_runs_python_install_after_explicit_consent(monkeypatch):
     )
 
     monkeypatch.setattr(installer, "_detect_python_environment", lambda: next(environments))
+    monkeypatch.setattr(installer, "_current_process_python_ready", lambda: True)
     monkeypatch.setattr(
         installer,
         "_detect_package_manager",
@@ -156,6 +158,155 @@ def test_bootstrap_runs_python_install_after_explicit_consent(monkeypatch):
     assert state.python_version == "3.11"
     assert state.consent_requested is True
     assert state.consent_granted is True
+
+
+def test_detect_python_environment_prefers_working_homebrew_python(monkeypatch):
+    command_outputs = {
+        ("/opt/homebrew/bin/python3.11", "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"): _completed(
+            ["/opt/homebrew/bin/python3.11"],
+            stdout="3.11\n",
+        ),
+        ("/opt/homebrew/bin/python3.11", "-m", "pip", "--version"): _completed(
+            ["/opt/homebrew/bin/python3.11"],
+            stdout="pip 24.0\n",
+        ),
+        ("python3", "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"): _completed(
+            ["python3"],
+            stdout="3.9\n",
+        ),
+        ("python3", "-m", "pip", "--version"): _completed(["python3"], stdout="pip 21.0\n"),
+        ("/usr/bin/python3", "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"): _completed(
+            ["/usr/bin/python3"],
+            stdout="3.9\n",
+        ),
+        ("/usr/bin/python3", "-m", "pip", "--version"): _completed(["/usr/bin/python3"], stdout="pip 21.0\n"),
+    }
+
+    monkeypatch.setattr(installer.sys, "platform", "darwin")
+    monkeypatch.setattr(installer.sys, "executable", "/usr/bin/python3")
+    monkeypatch.setattr(installer, "_homebrew_python_candidates", lambda: [["/opt/homebrew/bin/python3.11"]])
+    monkeypatch.setattr(installer, "_run_command", lambda command, *, cwd=None: command_outputs.get(tuple(command), _completed(command, returncode=1)))
+
+    env = installer._detect_python_environment()
+
+    assert env.command == ["/opt/homebrew/bin/python3.11"]
+    assert env.version_text == "3.11"
+    assert env.version_ok is True
+    assert env.pip_ok is True
+
+
+def test_bootstrap_restarts_installer_with_new_python(monkeypatch):
+    class RestartCalled(Exception):
+        pass
+
+    state = installer.InstallState(platform="darwin", mode="install")
+    commands: list[list[str]] = []
+    restart_commands: list[list[str]] = []
+    environments = iter(
+        [
+            _env(["python3"], "3.10", version_ok=False, pip_ok=True),
+            _env(["/opt/homebrew/bin/python3.11"], "3.11", version_ok=True, pip_ok=True),
+        ]
+    )
+
+    monkeypatch.setattr(installer, "_detect_python_environment", lambda: next(environments))
+    monkeypatch.setattr(installer, "_current_process_python_ready", lambda: False)
+    monkeypatch.setattr(
+        installer,
+        "_detect_package_manager",
+        lambda: installer.PackageManager("brew", ["brew", "install", "python@3.11"], automatic=True),
+    )
+    monkeypatch.setattr(
+        installer,
+        "_run_command",
+        lambda command, *, cwd=None: commands.append(command) or _completed(command),
+    )
+
+    def fake_restart(command: list[str]) -> None:
+        restart_commands.append(command)
+        raise RestartCalled()
+
+    monkeypatch.setattr(installer, "_restart_with_python", fake_restart)
+
+    with pytest.raises(RestartCalled):
+        installer._bootstrap_python(
+            state,
+            interactive=True,
+            input_func=lambda prompt: "ja",
+            print_func=lambda *args, **kwargs: None,
+        )
+
+    assert commands == [["brew", "install", "python@3.11"]]
+    assert restart_commands == [["/opt/homebrew/bin/python3.11"]]
+    assert state.bootstrap_status == "installed"
+    assert state.python_status == "ok"
+    assert state.python_command == "/opt/homebrew/bin/python3.11"
+    assert state.bootstrap_interpreter == "/opt/homebrew/bin/python3.11"
+    assert state.restart_status == "restarting"
+
+
+def test_bootstrap_reports_manual_rerun_when_restart_fails(monkeypatch):
+    state = installer.InstallState(platform="darwin", mode="install")
+    environments = iter(
+        [
+            _env(["python3"], "3.10", version_ok=False, pip_ok=True),
+            _env(["/opt/homebrew/bin/python3.11"], "3.11", version_ok=True, pip_ok=True),
+        ]
+    )
+
+    monkeypatch.setattr(installer, "_detect_python_environment", lambda: next(environments))
+    monkeypatch.setattr(installer, "_current_process_python_ready", lambda: False)
+    monkeypatch.setattr(
+        installer,
+        "_detect_package_manager",
+        lambda: installer.PackageManager("brew", ["brew", "install", "python@3.11"], automatic=True),
+    )
+    monkeypatch.setattr(installer, "_run_command", lambda command, *, cwd=None: _completed(command))
+    monkeypatch.setattr(installer, "_restart_with_python", lambda command: (_ for _ in ()).throw(OSError("kaboom")))
+
+    with pytest.raises(
+        installer.InstallError,
+        match=r"Voer handmatig uit: /opt/homebrew/bin/python3.11 .*install.py",
+    ):
+        installer._bootstrap_python(
+            state,
+            interactive=True,
+            input_func=lambda prompt: "ja",
+            print_func=lambda *args, **kwargs: None,
+        )
+
+    assert state.bootstrap_status == "installed"
+    assert state.restart_status == "failed"
+
+
+def test_ensure_posix_path_configuration_updates_profiles(monkeypatch, tmp_path):
+    profile = tmp_path / ".zshrc"
+    profile.write_text("# bestaand\n", encoding="utf-8")
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    monkeypatch.setattr(installer.sys, "platform", "darwin")
+
+    changed = installer._ensure_posix_path_configuration(tmp_path / "bin", [profile])
+
+    assert changed is True
+    content = profile.read_text(encoding="utf-8")
+    assert installer.PATH_BLOCK_START in content
+    assert 'export PATH="' in content
+    assert str(tmp_path / "bin") in content
+
+
+def test_ensure_posix_henk_launcher_creates_uppercase_wrapper(monkeypatch, tmp_path):
+    scripts_dir = tmp_path / "bin"
+    scripts_dir.mkdir()
+    launcher = scripts_dir / "henk"
+    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    monkeypatch.setattr(installer.sys, "platform", "linux")
+
+    created = installer._ensure_posix_henk_launcher(scripts_dir)
+
+    assert (scripts_dir / "Henk").exists()
+    if created:
+        assert (scripts_dir / "Henk") != launcher
 
 
 def test_bootstrap_requires_manual_instructions_without_package_manager(monkeypatch):
@@ -239,12 +390,16 @@ def test_detect_package_manager_prefers_winget_on_windows(monkeypatch):
 
 def test_install_wrapper_remains_thin():
     repo_dir = Path(__file__).resolve().parents[1]
+    pyproject = (repo_dir / "pyproject.toml").read_text(encoding="utf-8")
     install_wrapper = (repo_dir / "installeer.sh").read_text(encoding="utf-8")
     mac_install_command = (repo_dir / "Henk Installeren.command").read_text(encoding="utf-8")
     mac_uninstall_command = (repo_dir / "Henk Deinstalleren.command").read_text(encoding="utf-8")
     desktop_entry = (repo_dir / "Henk Installeren.desktop").read_text(encoding="utf-8")
     uninstall_desktop_entry = (repo_dir / "Henk Deinstalleren.desktop").read_text(encoding="utf-8")
 
+    assert "[tool.setuptools.packages.find]" in pyproject
+    assert 'include = ["henk*"]' in pyproject
+    assert 'exclude = ["skills*", "tests*"]' in pyproject
     assert "install.py" in install_wrapper
     assert "brew install" not in install_wrapper
     assert "winget install" not in install_wrapper
@@ -265,3 +420,13 @@ def test_deinstaller_mentions_mac_clickable_installer():
     deinstaller = (repo_dir / "deinstalleer.sh").read_text(encoding="utf-8")
 
     assert "Henk Installeren.command" in deinstaller
+
+
+def test_deinstaller_handles_missing_python_and_pip_gracefully():
+    repo_dir = Path(__file__).resolve().parents[1]
+    deinstaller = (repo_dir / "deinstalleer.sh").read_text(encoding="utf-8")
+
+    assert "python3.14 python3.13 python3.12 python3.11 python3 python" in deinstaller
+    assert "pip3 pip" in deinstaller
+    assert "Henk pakket was al niet geïnstalleerd of pip ontbreekt. OK" in deinstaller
+    assert "Geen los uitvoerbaar bestand gevonden. OK" in deinstaller
