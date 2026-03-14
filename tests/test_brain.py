@@ -1,14 +1,15 @@
 """Tests voor de Brain."""
 
 from copy import deepcopy
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from henk.brain import Brain, SYSTEM_PROMPT
 from henk.config import Config, DEFAULT_CONFIG
-from henk.router import ModelRole
+from henk.model_gateway import ModelCallResult
+from henk.requirements import Requirements
 from henk.router.providers.base import ProviderResponse, ToolCall
 from henk.tools.base import ToolResult
+from henk.token_tracker import TokenTracker
 
 
 class DummyProvider:
@@ -32,14 +33,27 @@ class DummyProvider:
         return {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_call_id, "content": result}]}
 
 
-class DummyRouter:
+class DummyModelGateway:
     def __init__(self, provider):
         self.provider = provider
-        self.roles = []
+        self.calls = []
+        self.token_tracker = TokenTracker()
 
-    def get_provider(self, role=ModelRole.DEFAULT, require_tools=False):
-        self.roles.append((role, require_tools))
-        return self.provider
+    def chat(self, *, role, messages, system, tools=None, max_tokens=1024, purpose, require_tools=False):
+        self.calls.append(
+            {
+                "role": role,
+                "messages": messages,
+                "system": system,
+                "tools": tools,
+                "max_tokens": max_tokens,
+                "purpose": purpose,
+                "require_tools": require_tools,
+            }
+        )
+        response = self.provider.chat(messages=messages, system=system, tools=tools, max_tokens=max_tokens)
+        self.token_tracker.add(getattr(response, "input_tokens", 0), getattr(response, "output_tokens", 0))
+        return ModelCallResult(provider=self.provider, response=response)
 
 
 def _make_config() -> Config:
@@ -49,7 +63,7 @@ def _make_config() -> Config:
 
 def test_brain_uses_system_prompt():
     provider = DummyProvider([ProviderResponse(text="Hoi!", tool_calls=None, raw=None)])
-    brain = Brain(_make_config(), router=DummyRouter(provider))
+    brain = Brain(_make_config(), model_gateway=DummyModelGateway(provider))
     brain.think("hallo")
     assert provider.calls[0]["system"] == SYSTEM_PROMPT
 
@@ -59,7 +73,7 @@ def test_brain_builds_message_history():
         ProviderResponse(text="Antwoord 1", tool_calls=None, raw=None),
         ProviderResponse(text="Antwoord 2", tool_calls=None, raw=None),
     ])
-    brain = Brain(_make_config(), router=DummyRouter(provider))
+    brain = Brain(_make_config(), model_gateway=DummyModelGateway(provider))
     brain.think("bericht 1")
     brain.think("bericht 2")
 
@@ -70,23 +84,12 @@ def test_brain_builds_message_history():
     ]
 
 
-def test_brain_greet_not_in_history():
-    provider = DummyProvider([
-        ProviderResponse(text="Hoi daar!", tool_calls=None, raw=None),
-        ProviderResponse(text="Antwoord", tool_calls=None, raw=None),
-    ])
-    brain = Brain(_make_config(), router=DummyRouter(provider))
-    brain.greet()
-    brain.think("vraag")
-    assert provider.calls[1]["messages"] == [{"role": "user", "content": "vraag"}]
-
-
 def test_brain_appends_memory_context_to_system_prompt():
     provider = DummyProvider([ProviderResponse(text="Hoi!", tool_calls=None, raw=None)])
     retrieval = MagicMock()
     retrieval.get_context.return_value = "Project Henk"
 
-    brain = Brain(_make_config(), router=DummyRouter(provider), memory_retrieval=retrieval)
+    brain = Brain(_make_config(), model_gateway=DummyModelGateway(provider), memory_retrieval=retrieval)
     brain.think("status?")
 
     system_prompt = provider.calls[0]["system"]
@@ -99,7 +102,7 @@ def test_run_with_tools_keeps_history_and_returns_final_answer():
         ProviderResponse(text=None, tool_calls=[ToolCall(id="tool-1", name="web_search", parameters={"query": "test"})], raw=None),
         ProviderResponse(text="Klaar", tool_calls=None, raw=None),
     ])
-    brain = Brain(_make_config(), router=DummyRouter(provider))
+    brain = Brain(_make_config(), model_gateway=DummyModelGateway(provider))
 
     def executor(name: str, params: dict):
         assert name == "web_search"
@@ -119,7 +122,7 @@ def test_summarize_session_uses_history():
         ProviderResponse(text="Antwoord", tool_calls=None, raw=None),
         ProviderResponse(text="Samenvatting", tool_calls=None, raw=None),
     ])
-    brain = Brain(_make_config(), router=DummyRouter(provider))
+    brain = Brain(_make_config(), model_gateway=DummyModelGateway(provider))
     brain.think("wat deden we?")
     summary = brain.summarize_session()
 
@@ -135,10 +138,34 @@ def test_brain_tracks_tokens_from_provider_responses():
             ProviderResponse(text="b", tool_calls=None, raw=None, input_tokens=4, output_tokens=3),
         ]
     )
-    brain = Brain(_make_config(), router=DummyRouter(provider))
+    gateway = DummyModelGateway(provider)
+    brain = Brain(_make_config(), model_gateway=gateway)
     brain.think("eerste")
     brain.think("tweede")
 
     assert brain.token_tracker.total_input == 14
     assert brain.token_tracker.total_output == 8
     assert brain.token_tracker.total == 22
+    assert brain.token_tracker is gateway.token_tracker
+
+
+def test_brain_routes_all_llm_calls_via_model_gateway():
+    provider = DummyProvider([
+        ProviderResponse(text="gesprek", tool_calls=None, raw=None),
+        ProviderResponse(text="Vraag?", tool_calls=None, raw=None),
+        ProviderResponse(text="Samenvatting", tool_calls=None, raw=None),
+    ])
+    gateway = DummyModelGateway(provider)
+    brain = Brain(_make_config(), model_gateway=gateway)
+    requirements = Requirements(task_description="maak een plan")
+
+    assert brain.classify_input("hoi") == "gesprek"
+    brain.refine_requirements("maak een plan", requirements)
+    brain._history = [{"role": "user", "content": "x"}, {"role": "assistant", "content": "y"}]
+    brain.summarize_session()
+
+    assert [call["purpose"] for call in gateway.calls] == [
+        "classify_input",
+        "refine_requirements",
+        "summarize_session",
+    ]

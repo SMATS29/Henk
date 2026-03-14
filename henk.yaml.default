@@ -1,6 +1,7 @@
 henk:
   name: Henk
   language: nl
+  user_name: ""
 
 providers:
   anthropic:

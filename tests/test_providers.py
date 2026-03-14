@@ -1,7 +1,10 @@
+import pytest
+
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from henk.router.providers.anthropic import AnthropicProvider
+from henk.router.providers.base import ProviderRequestError
 from henk.router.providers.deepseek import DeepSeekProvider
 from henk.router.providers.lmstudio import LMStudioProvider
 from henk.router.providers.ollama import OllamaProvider
@@ -111,3 +114,29 @@ def test_openai_compatible_handles_missing_usage(mock_openai):
 
     assert response.input_tokens == 0
     assert response.output_tokens == 0
+
+
+@patch("henk.router.providers.anthropic.anthropic.Anthropic")
+def test_anthropic_provider_wraps_network_errors(mock_cls):
+    mock_client = MagicMock()
+    mock_cls.return_value = mock_client
+    mock_client.messages.create.side_effect = RuntimeError("connection refused")
+
+    provider = AnthropicProvider(api_key="x", model="m")
+    with pytest.raises(ProviderRequestError) as exc_info:
+        provider.chat(messages=[{"role": "user", "content": "h"}], system="s")
+
+    assert exc_info.value.reason == "network_unavailable"
+
+
+@patch("henk.router.providers.openai_provider.openai.OpenAI")
+def test_openai_compatible_wraps_auth_errors(mock_openai):
+    mock_client = MagicMock()
+    mock_openai.return_value = mock_client
+    mock_client.chat.completions.create.side_effect = RuntimeError("authentication failed")
+
+    provider = OpenAICompatibleProvider(api_key="k", model="m")
+    with pytest.raises(ProviderRequestError) as exc_info:
+        provider.chat(messages=[{"role": "user", "content": "h"}], system="s")
+
+    assert exc_info.value.reason == "authentication_failed"

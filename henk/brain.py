@@ -6,10 +6,10 @@ from typing import Any
 
 from henk.config import Config
 from henk.memory.retrieval import MemoryRetrieval
+from henk.model_gateway import ModelGateway
 from henk.requirements import Requirements
 from henk.router import ModelRole, ModelRouter
 from henk.skills.selector import SkillSelector
-from henk.token_tracker import TokenTracker
 
 
 SYSTEM_PROMPT = """\
@@ -49,29 +49,24 @@ zeg je dat een keer, kort, met reden. Daarna doe je wat gevraagd is.
 Je bent Henk. Niet meer, niet minder."""
 
 
-GREETING_INSTRUCTION = (
-    "Geef een korte, natuurlijke begroeting. "
-    "Varieer, zeg niet elke keer hetzelfde. Een of twee zinnen max."
-)
-
-
 class Brain:
     """Henk's brein: system prompt, history en modelroutering."""
 
     def __init__(
         self,
         config: Config,
+        model_gateway: ModelGateway | None = None,
         router: ModelRouter | None = None,
         memory_retrieval: MemoryRetrieval | None = None,
         skill_selector: SkillSelector | None = None,
     ):
         self._config = config
-        self._router = router or ModelRouter(config)
+        self._model_gateway = model_gateway or ModelGateway(router or ModelRouter(config))
         self._history: list[dict[str, Any]] = []
         self._memory_retrieval = memory_retrieval
         self._skill_selector = skill_selector
         self._active_requirements: Requirements | None = None
-        self.token_tracker = TokenTracker()
+        self.token_tracker = self._model_gateway.token_tracker
 
     @property
     def active_requirements(self) -> Requirements | None:
@@ -85,21 +80,16 @@ class Brain:
     def has_history(self) -> bool:
         return bool(self._history)
 
-    def greet(self) -> str:
-        provider = self._router.get_provider(ModelRole.FAST)
-        response = provider.chat(
-            messages=[{"role": "user", "content": GREETING_INSTRUCTION}],
-            system=SYSTEM_PROMPT,
-        )
-        self._track_response(response)
-        return response.text or "Hoi."
-
     def think(self, user_message: str, *, include_in_history: bool = True) -> str:
-        provider = self._router.get_provider(ModelRole.DEFAULT)
         messages = self._history.copy()
         messages.append({"role": "user", "content": user_message})
-        response = provider.chat(messages=messages, system=self._build_system_prompt(user_message))
-        self._track_response(response)
+        result = self._model_gateway.chat(
+            role=ModelRole.DEFAULT,
+            messages=messages,
+            system=self._build_system_prompt(user_message),
+            purpose="think",
+        )
+        response = result.response
         answer = response.text or "Ik heb nu geen antwoord."
 
         if include_in_history:
@@ -110,8 +100,8 @@ class Brain:
 
     def classify_input(self, user_message: str) -> str:
         """Classificeer input als taak of gesprek."""
-        provider = self._router.get_provider(ModelRole.FAST)
-        response = provider.chat(
+        response = self._model_gateway.chat(
+            role=ModelRole.FAST,
             messages=[
                 {
                     "role": "user",
@@ -122,13 +112,12 @@ class Brain:
                 }
             ],
             system="Classificeer berichten. Antwoord alleen met 'taak' of 'gesprek'.",
-        )
-        self._track_response(response)
+            purpose="classify_input",
+        ).response
         return "taak" if "taak" in (response.text or "").strip().lower() else "gesprek"
 
     def refine_requirements(self, user_input: str, requirements: Requirements) -> str:
         """Verfijn eisen via gesprek."""
-        provider = self._router.get_provider(ModelRole.DEFAULT)
         system = self._build_system_prompt(user_input)
         prompt = (
             f"De gebruiker wil: {requirements.task_description}\n"
@@ -140,8 +129,12 @@ class Brain:
             "Als de gebruiker bevestigt (ja/akkoord/doe maar), antwoord dan exact met: [CONFIRMED]"
         )
 
-        response = provider.chat(messages=self._history + [{"role": "user", "content": prompt}], system=system)
-        self._track_response(response)
+        response = self._model_gateway.chat(
+            role=ModelRole.DEFAULT,
+            messages=self._history + [{"role": "user", "content": prompt}],
+            system=system,
+            purpose="refine_requirements",
+        ).response
         answer = response.text or ""
         if "[CONFIRMED]" in answer:
             requirements.confirm()
@@ -154,15 +147,23 @@ class Brain:
         return answer
 
     def run_with_tools(self, user_message: str, tool_executor: Any, tools: list[dict[str, Any]] | None = None) -> str:
-        provider = self._router.get_provider(ModelRole.DEFAULT, require_tools=True)
         system = self._build_system_prompt(user_message)
+        tool_defs = tools or self._anthropic_tools()
 
         self._history.append({"role": "user", "content": user_message})
         messages: list[dict[str, Any]] = self._history.copy()
 
         while True:
-            response = provider.chat(messages=messages, system=system, tools=tools or self._anthropic_tools())
-            self._track_response(response)
+            result = self._model_gateway.chat(
+                role=ModelRole.DEFAULT,
+                messages=messages,
+                system=system,
+                tools=tool_defs,
+                purpose="run_with_tools",
+                require_tools=True,
+            )
+            provider = result.provider
+            response = result.response
             if not response.tool_calls:
                 answer = response.text or "Ik heb nu geen antwoord."
                 self._history.append({"role": "assistant", "content": answer})
@@ -183,7 +184,6 @@ class Brain:
     def summarize_session(self) -> str | None:
         if not self._history:
             return None
-        provider = self._router.get_provider(ModelRole.FAST)
         transcript = "\n".join(
             f"{'Gebruiker' if msg['role'] == 'user' else 'Henk'}: {msg['content']}" for msg in self._history
         )
@@ -192,12 +192,13 @@ class Brain:
             "Noem alleen duurzame of relevante context voor later.\n\n"
             f"{transcript}"
         )
-        response = provider.chat(messages=[{"role": "user", "content": prompt}], system=SYSTEM_PROMPT)
-        self._track_response(response)
+        response = self._model_gateway.chat(
+            role=ModelRole.FAST,
+            messages=[{"role": "user", "content": prompt}],
+            system=SYSTEM_PROMPT,
+            purpose="summarize_session",
+        ).response
         return response.text
-
-    def _track_response(self, response: Any) -> None:
-        self.token_tracker.add(getattr(response, "input_tokens", 0), getattr(response, "output_tokens", 0))
 
     def _build_system_prompt(self, user_message: str) -> str:
         memory_context = ""

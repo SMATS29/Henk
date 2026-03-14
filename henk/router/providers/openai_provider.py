@@ -5,7 +5,13 @@ from typing import Any
 
 import openai
 
-from henk.router.providers.base import BaseProvider, ProviderResponse, ToolCall
+from henk.router.providers.base import (
+    BaseProvider,
+    ProviderRequestError,
+    ProviderResponse,
+    ToolCall,
+    classify_provider_error,
+)
 
 
 class OpenAICompatibleProvider(BaseProvider):
@@ -34,7 +40,10 @@ class OpenAICompatibleProvider(BaseProvider):
         if tools:
             kwargs["tools"] = self._convert_tools(tools)
 
-        response = self._client.chat.completions.create(**kwargs)
+        try:
+            response = self._client.chat.completions.create(**kwargs)
+        except Exception as error:
+            raise ProviderRequestError(self.name, classify_provider_error(error), str(error)) from error
         choice = response.choices[0]
         usage = getattr(response, "usage", None)
         input_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0

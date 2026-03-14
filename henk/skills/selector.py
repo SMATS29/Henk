@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from henk.router import ModelRole, ModelRouter
+from henk.model_gateway import ModelGateway
+from henk.router import ModelRole
 from henk.skills.models import Skill
 from henk.skills.parser import SkillParser
 
@@ -10,9 +11,9 @@ from henk.skills.parser import SkillParser
 class SkillSelector:
     """Selecteert de juiste skill via samenvattingen."""
 
-    def __init__(self, skills_dir: Path, router: ModelRouter):
+    def __init__(self, skills_dir: Path, model_gateway: ModelGateway):
         self._skills_dir = skills_dir
-        self._router = router
+        self._model_gateway = model_gateway
         self._parser = SkillParser()
 
     def select(self, user_request: str) -> Skill | None:
@@ -21,8 +22,8 @@ class SkillSelector:
             return None
 
         summaries = "\n".join(f"- {skill.name}: {skill.summary}" for skill in skills)
-        provider = self._router.get_provider(ModelRole.FAST)
-        response = provider.chat(
+        response = self._model_gateway.chat(
+            role=ModelRole.FAST,
             messages=[
                 {
                     "role": "user",
@@ -34,7 +35,8 @@ class SkillSelector:
                 }
             ],
             system="Je bent een skill-selector. Kies de best passende skill of zeg 'geen'.",
-        )
+            purpose="skill_select",
+        ).response
 
         chosen_name = (response.text or "").strip().lower()
         for skill in skills:

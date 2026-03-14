@@ -5,6 +5,26 @@ from dataclasses import dataclass
 from typing import Any
 
 
+class ProviderRequestError(RuntimeError):
+    """Gestructureerde fout tijdens een provider-request."""
+
+    def __init__(self, provider_name: str, reason: str, detail: str = ""):
+        self.provider_name = provider_name
+        self.reason = reason
+        self.detail = detail
+        super().__init__(detail or f"Provider request mislukt: {provider_name} ({reason})")
+
+
+def classify_provider_error(error: Exception) -> str:
+    """Classificeer providerfouten voor duidelijke CLI-meldingen."""
+    message = str(error).lower()
+    if any(token in message for token in ("connection", "connect", "timeout", "timed out", "dns", "unreachable", "refused")):
+        return "network_unavailable"
+    if any(token in message for token in ("authentication", "auth", "api key", "unauthorized", "forbidden", "401", "403")):
+        return "authentication_failed"
+    return "request_failed"
+
+
 @dataclass
 class ToolCall:
     """Een tool-aanroep van het model."""

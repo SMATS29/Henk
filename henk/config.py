@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "henk": {"name": "Henk", "language": "nl"},
+    "henk": {"name": "Henk", "language": "nl", "user_name": ""},
     "providers": {
         "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
         "openai": {"api_key_env": "OPENAI_API_KEY"},
@@ -104,6 +104,10 @@ class Config:
     @property
     def roles_config(self) -> dict[str, Any]:
         return self._data.get("roles", {})
+
+    @property
+    def user_name(self) -> str:
+        return str(self._data.get("henk", {}).get("user_name", "")).strip()
 
     @property
     def data_dir(self) -> Path:

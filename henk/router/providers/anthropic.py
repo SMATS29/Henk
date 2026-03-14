@@ -4,7 +4,13 @@ from typing import Any
 
 import anthropic
 
-from henk.router.providers.base import BaseProvider, ProviderResponse, ToolCall
+from henk.router.providers.base import (
+    BaseProvider,
+    ProviderRequestError,
+    ProviderResponse,
+    ToolCall,
+    classify_provider_error,
+)
 
 
 class AnthropicProvider(BaseProvider):
@@ -30,7 +36,10 @@ class AnthropicProvider(BaseProvider):
         if tools:
             kwargs["tools"] = tools
 
-        response = self._client.messages.create(**kwargs)
+        try:
+            response = self._client.messages.create(**kwargs)
+        except Exception as error:
+            raise ProviderRequestError(self.name, classify_provider_error(error), str(error)) from error
 
         tool_calls: list[ToolCall] = []
         text_parts: list[str] = []

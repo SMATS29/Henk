@@ -6,7 +6,34 @@ import pytest
 
 from henk.tools.base import ToolResult
 from henk.gateway import Gateway, KillSwitchActive
+from henk.model_gateway import ModelGateway
+from henk.router import ModelRole, ProviderAttempt, ProviderSelectionError
+from henk.router.providers.base import ProviderResponse
 from henk.transcript import TranscriptWriter
+
+
+def test_gateway_returns_local_greeting_with_user_name(config, mock_brain):
+    """Gateway gebruikt een lokale startup-groet met naam uit config."""
+    config.raw["henk"]["user_name"] = "Joost"
+    transcript = TranscriptWriter(config.logs_dir)
+    gateway = Gateway(config, mock_brain, transcript)
+
+    greeting = gateway.get_greeting()
+
+    assert greeting == "Hoi, Joost. Zeg het maar."
+    assert mock_brain.mock_calls == []
+    content = transcript.file_path.read_text(encoding="utf-8")
+    assert "Hoi, Joost. Zeg het maar." in content
+
+
+def test_gateway_returns_local_greeting_without_user_name(config, mock_brain):
+    transcript = TranscriptWriter(config.logs_dir)
+    gateway = Gateway(config, mock_brain, transcript)
+
+    greeting = gateway.get_greeting()
+
+    assert greeting == "Hoi. Zeg het maar."
+    assert mock_brain.mock_calls == []
 
 
 def test_gateway_blocks_on_hard_stop(config, mock_brain):
@@ -90,3 +117,93 @@ def test_gateway_masks_memory_write_payload(config, mock_brain):
     last_record = transcript.file_path.read_text(encoding="utf-8").strip().splitlines()[-1]
     payload = json.loads(last_record)["payload"]
     assert payload == "[MEMORY — niet gelogd]"
+
+
+class DummyProvider:
+    name = "dummy"
+    _model = "m"
+
+    def __init__(self, response: ProviderResponse):
+        self._response = response
+
+    def chat(self, **kwargs):
+        return self._response
+
+    def supports_tools(self):
+        return True
+
+
+class DummyRouter:
+    def __init__(self, provider):
+        self._provider = provider
+        self.calls = []
+
+    def get_provider(self, role=ModelRole.DEFAULT, require_tools=False):
+        self.calls.append((role, require_tools))
+        return self._provider
+
+    def provider_label(self, provider):
+        return f"{provider.name}/{provider._model}"
+
+
+class FailingRouter:
+    def get_provider(self, role=ModelRole.DEFAULT, require_tools=False):
+        raise ProviderSelectionError(role, [ProviderAttempt("openai/gpt-4o", "missing_credentials")])
+
+    def provider_label(self, provider):
+        return "n/a"
+
+
+def test_model_gateway_tracks_calls_and_tokens(config):
+    provider = DummyProvider(ProviderResponse(text="Hoi", tool_calls=None, raw=None, input_tokens=12, output_tokens=7))
+    transcript = TranscriptWriter(config.logs_dir)
+    model_gateway = ModelGateway(DummyRouter(provider), transcript)
+
+    result = model_gateway.chat(
+        role=ModelRole.DEFAULT,
+        messages=[{"role": "user", "content": "hallo"}],
+        system="s",
+        purpose="think",
+    )
+
+    assert result.response.text == "Hoi"
+    assert model_gateway.call_count == 1
+    assert model_gateway.token_tracker.total_input == 12
+    assert model_gateway.token_tracker.total_output == 7
+
+
+def test_model_gateway_logs_debug_events_to_transcript(config):
+    provider = DummyProvider(ProviderResponse(text="Hoi", tool_calls=None, raw=None, input_tokens=3, output_tokens=2))
+    transcript = TranscriptWriter(config.logs_dir)
+    model_gateway = ModelGateway(DummyRouter(provider), transcript)
+
+    model_gateway.chat(
+        role=ModelRole.FAST,
+        messages=[{"role": "user", "content": "classificeer"}],
+        system="s",
+        purpose="classify_input",
+    )
+
+    records = [json.loads(line) for line in transcript.file_path.read_text(encoding="utf-8").splitlines()]
+    assert records[-2]["type"] == "model.request"
+    assert records[-2]["purpose"] == "classify_input"
+    assert records[-1]["type"] == "model.response"
+    assert records[-1]["provider"] == "dummy/m"
+
+
+def test_model_gateway_logs_error_events_to_transcript(config):
+    transcript = TranscriptWriter(config.logs_dir)
+    model_gateway = ModelGateway(FailingRouter(), transcript)
+
+    with pytest.raises(ProviderSelectionError):
+        model_gateway.chat(
+            role=ModelRole.DEFAULT,
+            messages=[{"role": "user", "content": "hallo"}],
+            system="s",
+            purpose="think",
+        )
+
+    record = json.loads(transcript.file_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["type"] == "model.error"
+    assert record["reason"] == "selection_failed"
+    assert record["attempts"][0]["reason"] == "missing_credentials"

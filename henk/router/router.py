@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -22,6 +23,25 @@ class ModelRole(str, Enum):
     FAST = "fast"
     DEFAULT = "default"
     HEAVY = "heavy"
+
+
+@dataclass(frozen=True)
+class ProviderAttempt:
+    provider_key: str
+    reason: str
+
+
+class ProviderSelectionError(RuntimeError):
+    """Geen bruikbare provider beschikbaar voor een rol."""
+
+    def __init__(self, role: ModelRole, attempts: list[ProviderAttempt]):
+        self.role = role
+        self.attempts = attempts
+        super().__init__(f"Geen beschikbare provider voor rol: {role.value}")
+
+    @property
+    def reasons(self) -> set[str]:
+        return {attempt.reason for attempt in self.attempts}
 
 
 class ModelRouter:
@@ -80,30 +100,34 @@ class ModelRouter:
 
     def get_provider(self, role: ModelRole = ModelRole.DEFAULT, *, require_tools: bool = False) -> BaseProvider:
         providers_for_role = self._role_mapping.get(role, [])
+        attempts: list[ProviderAttempt] = []
         for provider_key in providers_for_role:
             provider = self._providers.get(provider_key)
             if not provider:
                 continue
             if require_tools and not provider.supports_tools():
+                attempts.append(ProviderAttempt(provider_key, "unsupported_tools"))
                 continue
-            if self._is_available(provider_key, provider):
+            reason = self._availability_reason(provider_key, provider)
+            if reason is None:
                 return provider
-        raise RuntimeError(f"Geen beschikbare provider voor rol: {role.value}")
+            attempts.append(ProviderAttempt(provider_key, reason))
+        raise ProviderSelectionError(role, attempts)
 
-    def _is_available(self, provider_key: str, provider: BaseProvider) -> bool:
+    def _availability_reason(self, provider_key: str, provider: BaseProvider) -> str | None:
         meta = self._provider_meta.get(provider_key, {})
         provider_name = meta.get("provider", provider.name)
         if provider_name in {"anthropic", "openai", "deepseek"}:
             api_key_env = meta.get("api_key_env")
-            return bool(api_key_env and os.environ.get(api_key_env))
+            return None if api_key_env and os.environ.get(api_key_env) else "missing_credentials"
         base_url = meta.get("base_url")
         if not base_url:
-            return True
+            return None
         try:
             with urlopen(base_url.removesuffix("/v1") + "/", timeout=0.5):
-                return True
+                return None
         except URLError:
-            return False
+            return "provider_unavailable"
 
     def describe_role_chain(self, role: ModelRole) -> list[str]:
         return list(self._role_mapping.get(role, []))
@@ -114,6 +138,6 @@ class ModelRouter:
 
     def list_providers(self) -> dict[str, str]:
         return {
-            key: ("beschikbaar" if self._is_available(key, provider) else "onbeschikbaar")
+            key: ("beschikbaar" if self._availability_reason(key, provider) is None else "onbeschikbaar")
             for key, provider in self._providers.items()
         }

@@ -17,10 +17,12 @@ from henk.config import Config
 from henk.gateway import Gateway, KillSwitchActive
 from henk.heartbeat import Heartbeat, ReminderTool
 from henk.memory import ChangeType, MemoryRetrieval, MemoryStore, Provenance, RelevanceScorer, StagedChange, StagingManager
+from henk.model_gateway import ModelGateway
 from henk.output import print_henk
 from henk.react_loop import ReactLoop
 from henk.requirements import Requirements, RequirementsStatus
-from henk.router import ModelRouter
+from henk.router import ModelRouter, ProviderSelectionError
+from henk.router.providers.base import ProviderRequestError
 from henk.security.proxy import SecurityProxy
 from henk.skills import SkillRunner, SkillSelector
 from henk.spinner import Spinner
@@ -31,6 +33,29 @@ from henk.tools.web_search import WebSearchTool
 from henk.transcript import TranscriptWriter
 
 PROMPT_STYLE = Style.from_dict({"prompt": "bold cyan"})
+
+
+def _message_for_model_error(error: Exception) -> str:
+    if isinstance(error, ProviderSelectionError):
+        reasons = error.reasons
+        if reasons == {"missing_credentials"}:
+            return "Ik kan geen model bereiken omdat er geen API key is ingesteld."
+        if reasons <= {"provider_unavailable"}:
+            return "Ik kan het model nu niet bereiken. Check je internet of lokale modelserver."
+        if "missing_credentials" in reasons and "provider_unavailable" in reasons:
+            return "Ik kan geen model bereiken: er ontbreekt een API key en er is geen werkende fallbackprovider."
+        if reasons == {"unsupported_tools"}:
+            return "Ik kan deze taak nu niet uitvoeren met de beschikbare modellen."
+        return "Ik kan even geen model kiezen. Check je configuratie en verbinding."
+    if isinstance(error, ProviderRequestError):
+        if error.reason == "network_unavailable":
+            return "Ik kan het model nu niet bereiken. Check je internet of lokale modelserver."
+        if error.reason == "authentication_failed":
+            return "Ik kan het model niet gebruiken. Check je API key."
+        if error.reason == "missing_credentials":
+            return "Ik kan geen model bereiken omdat er geen API key is ingesteld."
+        return "De modelaanroep mislukte. Probeer het zo nog eens."
+    return "Ik kan even niet bij mijn brein. Check je API key of internetverbinding."
 
 
 def _build_completer() -> WordCompleter:
@@ -84,8 +109,9 @@ def start_repl(config: Config, console: Console) -> None:
     _, staging, _, retrieval = _build_memory_services(config)
     transcript = TranscriptWriter(config.logs_dir)
     router = ModelRouter(config)
-    skill_selector = SkillSelector(config.skills_dir, router) if config.skills_enabled else None
-    brain = Brain(config, router=router, memory_retrieval=retrieval, skill_selector=skill_selector)
+    model_gateway = ModelGateway(router, transcript)
+    skill_selector = SkillSelector(config.skills_dir, model_gateway) if config.skills_enabled else None
+    brain = Brain(config, model_gateway=model_gateway, memory_retrieval=retrieval, skill_selector=skill_selector)
     gateway = Gateway(config, brain, transcript)
     proxy = SecurityProxy(config.proxy_allowed_domains, config.proxy_allowed_methods)
 
@@ -194,6 +220,9 @@ def start_repl(config: Config, console: Console) -> None:
             except KillSwitchActive as error:
                 spinner.stop()
                 console.print(f"[red]Henk is gestopt ({error.switch_type}). Typ /resume om te hervatten.[/red]")
+            except (ProviderSelectionError, ProviderRequestError) as error:
+                spinner.stop()
+                console.print(f"[red]{_message_for_model_error(error)}[/red]\n")
             except Exception:
                 spinner.stop()
                 console.print("[red]Ik kan even niet bij mijn brein. Check je API key of internetverbinding.[/red]\n")

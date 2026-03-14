@@ -57,6 +57,7 @@ def test_init_creates_files(tmp_path, monkeypatch):
     config_text = config_path.read_text(encoding="utf-8")
     assert "providers:" in config_text
     assert "roles:" in config_text
+    assert "user_name:" in config_text
     assert "primary: anthropic/claude-sonnet-4-6" in config_text
 
 

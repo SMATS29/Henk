@@ -1,3 +1,3 @@
-from henk.router.router import ModelRole, ModelRouter
+from henk.router.router import ModelRole, ModelRouter, ProviderAttempt, ProviderSelectionError
 
-__all__ = ["ModelRole", "ModelRouter"]
+__all__ = ["ModelRole", "ModelRouter", "ProviderAttempt", "ProviderSelectionError"]

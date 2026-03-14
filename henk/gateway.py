@@ -165,8 +165,9 @@ class Gateway:
         return response
 
     def get_greeting(self) -> str:
-        """Haal een begroeting op via de Brain."""
-        greeting = self._brain.greet()
+        """Bouw een lokale startup-begroeting zonder modelcall."""
+        user_name = self._config.user_name
+        greeting = f"Hoi, {user_name}. Zeg het maar." if user_name else "Hoi. Zeg het maar."
         self._transcript.write("assistant", greeting)
         return greeting
 

@@ -59,7 +59,6 @@ def mock_brain(config):
     """Een mock Brain die geen API calls doet."""
     brain = MagicMock()
     brain.think.return_value = "Test antwoord van Henk."
-    brain.greet.return_value = "Hoi, ik ben Henk."
     brain.summarize_session.return_value = "Samenvatting van de sessie."
     brain.has_history = False
     return brain
