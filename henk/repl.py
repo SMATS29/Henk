@@ -5,37 +5,20 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
 from rich.console import Console
 
-from henk.brain import Brain
-from henk.commands import dispatch_command, get_command_names
-from henk.config import Config
-from henk.gateway import Gateway, KillSwitchActive
-from henk.heartbeat import Heartbeat, ReminderTool
-from henk.memory import ChangeType, MemoryRetrieval, MemoryStore, Provenance, RelevanceScorer, StagedChange, StagingManager
-from henk.model_gateway import ModelGateway
-from henk.output import print_henk
-from henk.react_loop import ReactLoop
-from henk.requirements import Requirements, RequirementsStatus
-from henk.router import ModelRouter, ProviderSelectionError
-from henk.router.providers.base import ProviderRequestError
-from henk.security.proxy import SecurityProxy
-from henk.skills import SkillRunner, SkillSelector
-from henk.spinner import Spinner
-from henk.tools.code_runner import CodeRunnerTool
-from henk.tools.file_manager import FileManagerTool
-from henk.tools.memory_write import MemoryWriteTool
-from henk.tools.web_search import WebSearchTool
-from henk.transcript import TranscriptWriter
-
 PROMPT_STYLE = Style.from_dict({"prompt": "bold cyan"})
 
 
 def _message_for_model_error(error: Exception) -> str:
+    from henk.router import ProviderSelectionError
+    from henk.router.providers.base import ProviderRequestError
+
     if isinstance(error, ProviderSelectionError):
         reasons = error.reasons
         if reasons == {"missing_credentials"}:
@@ -58,7 +41,57 @@ def _message_for_model_error(error: Exception) -> str:
     return "Ik kan even niet bij mijn brein. Check je API key of internetverbinding."
 
 
+def _format_natural_list(items: list[str]) -> str:
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} en {items[1]}"
+    return f"{', '.join(items[:-1])} en {items[-1]}"
+
+
+def _startup_missing_key_message(router: ModelRouter) -> str | None:
+    from henk.router import ModelRole, ProviderSelectionError
+
+    missing_roles: list[str] = []
+    for role in ModelRole:
+        try:
+            router.get_provider(role)
+        except ProviderSelectionError as error:
+            if error.reasons == {"missing_credentials"}:
+                missing_roles.append(role.value)
+
+    if not missing_roles:
+        return None
+
+    return (
+        "Ik heb nog geen API keys beschikbaar voor de volgende modellen: "
+        f"{_format_natural_list(missing_roles)}."
+    )
+
+
+class SlashCommandAutoSuggest(AutoSuggest):
+    def get_suggestion(self, buffer, document):
+        text = document.text_before_cursor.strip()
+        if not text.startswith("/") or " " in text:
+            return None
+
+        from henk.commands import get_command_names
+
+        matches = sorted(
+            (command for command in get_command_names() if command.startswith(text) and command != text),
+            key=lambda command: (len(command), command),
+        )
+        if not matches:
+            return None
+
+        return Suggestion(matches[0][len(text):])
+
+
 def _build_completer() -> WordCompleter:
+    from henk.commands import get_command_names
+
     return WordCompleter(
         get_command_names(),
         sentence=True,
@@ -66,6 +99,7 @@ def _build_completer() -> WordCompleter:
             "/stop": "Hard stop — alles stopt direct",
             "/pause": "Pauzeer — geen nieuwe taken",
             "/resume": "Hervat na pause of stop",
+            "/model": "Beheer taaktypes, modellen en API keys",
             "/status": "Toon status van Henk",
             "/review": "Dagelijkse memory review",
             "/config": "Bekijk configuratie",
@@ -78,6 +112,8 @@ def _build_completer() -> WordCompleter:
 
 
 def _build_memory_services(config: Config):
+    from henk.memory import MemoryRetrieval, MemoryStore, RelevanceScorer, StagingManager
+
     store = MemoryStore(config.memory_dir, initial_score=config.memory_scoring["initial_score"])
     staging = StagingManager(config.memory_dir / ".staged", store)
     scorer = RelevanceScorer(**config.memory_scoring)
@@ -91,21 +127,55 @@ def _build_memory_services(config: Config):
     return store, staging, scorer, retrieval
 
 
-def _build_key_bindings() -> KeyBindings:
+def _build_key_bindings() -> tuple[KeyBindings, bool]:
     bindings = KeyBindings()
+    shift_enter_supported = False
 
     @bindings.add("enter")
     def handle_enter(event) -> None:
         event.current_buffer.validate_and_handle()
 
-    @bindings.add("s-enter")
-    def handle_shift_enter(event) -> None:
-        event.current_buffer.insert_text("\n")
+    try:
+        @bindings.add("s-enter")
+        def handle_shift_enter(event) -> None:
+            event.current_buffer.insert_text("\n")
 
-    return bindings
+        shift_enter_supported = True
+    except ValueError:
+        shift_enter_supported = False
+
+    @bindings.add("tab")
+    def handle_tab(event) -> None:
+        suggestion = event.current_buffer.suggestion
+        if suggestion:
+            event.current_buffer.insert_text(suggestion.text)
+            return
+        event.current_buffer.start_completion(select_first=False)
+
+    return bindings, shift_enter_supported
 
 
 def start_repl(config: Config, console: Console) -> None:
+    from henk.brain import Brain
+    from henk.commands import dispatch_command
+    from henk.gateway import Gateway, KillSwitchActive
+    from henk.heartbeat import Heartbeat, ReminderTool
+    from henk.memory import ChangeType, Provenance, StagedChange
+    from henk.model_gateway import ModelGateway
+    from henk.output import print_henk
+    from henk.react_loop import ReactLoop
+    from henk.requirements import Requirements, RequirementsStatus
+    from henk.router import ModelRouter, ProviderSelectionError
+    from henk.router.providers.base import ProviderRequestError
+    from henk.security.proxy import SecurityProxy
+    from henk.skills import SkillRunner, SkillSelector
+    from henk.spinner import Spinner
+    from henk.tools.code_runner import CodeRunnerTool
+    from henk.tools.file_manager import FileManagerTool
+    from henk.tools.memory_write import MemoryWriteTool
+    from henk.tools.web_search import WebSearchTool
+    from henk.transcript import TranscriptWriter
+
     _, staging, _, retrieval = _build_memory_services(config)
     transcript = TranscriptWriter(config.logs_dir)
     router = ModelRouter(config)
@@ -144,15 +214,30 @@ def start_repl(config: Config, console: Console) -> None:
     except Exception:
         print_henk(console, "Hoi. Wat kan ik voor je doen?", brain.token_tracker)
 
+    startup_message = _startup_missing_key_message(router)
+    if startup_message:
+        print_henk(console, startup_message, brain.token_tracker)
+
+    key_bindings, shift_enter_supported = _build_key_bindings()
+    if not shift_enter_supported:
+        console.print("[dim]Shift+Enter wordt in deze terminal niet apart herkend. Typ /help voor uitleg.[/dim]\n")
+
     session = PromptSession(
         completer=_build_completer(),
+        auto_suggest=SlashCommandAutoSuggest(),
         style=PROMPT_STYLE,
         complete_while_typing=False,
-        key_bindings=_build_key_bindings(),
+        key_bindings=key_bindings,
         multiline=True,
         prompt_continuation="  ",
     )
-    command_context = {"brain": brain, "router": router, "gateway": gateway, "react_loop": react_loop}
+    command_context = {
+        "brain": brain,
+        "router": router,
+        "gateway": gateway,
+        "react_loop": react_loop,
+        "shift_enter_supported": shift_enter_supported,
+    }
 
     try:
         while True:
