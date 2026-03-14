@@ -18,9 +18,40 @@ echo "=============================================="
 echo ""
 
 # --------------------------------------------------------------------------
-# Stap 1: Python controleren
+# Stap 1: Actieve processen stoppen
 # --------------------------------------------------------------------------
-echo "[ 1/4 ] Python controleren..."
+echo "[ 1/5 ] Actieve Henk-processen stoppen..."
+
+if pgrep -f "python.*henk" &>/dev/null || pgrep -f "[/]henk$" &>/dev/null; then
+    echo "  Henk is nog actief. Processen worden gestopt..."
+
+    # Nette afsluiting (geeft het proces kans om op te schonen)
+    pkill -TERM -f "python.*henk" 2>/dev/null || true
+    pkill -TERM -f "[/]henk$"     2>/dev/null || true
+    sleep 2
+
+    # Als processen nog steeds draaien: forceer afsluiting
+    if pgrep -f "python.*henk" &>/dev/null || pgrep -f "[/]henk$" &>/dev/null; then
+        pkill -KILL -f "python.*henk" 2>/dev/null || true
+        pkill -KILL -f "[/]henk$"     2>/dev/null || true
+        sleep 1
+    fi
+
+    if pgrep -f "python.*henk" &>/dev/null || pgrep -f "[/]henk$" &>/dev/null; then
+        echo "  WAARSCHUWING: Sommige processen konden niet gestopt worden."
+        echo "  Sluit open Henk-vensters handmatig en probeer opnieuw."
+    else
+        echo "  Alle processen gestopt. OK"
+    fi
+else
+    echo "  Geen actieve Henk-processen gevonden. OK"
+fi
+echo ""
+
+# --------------------------------------------------------------------------
+# Stap 2: Python controleren
+# --------------------------------------------------------------------------
+echo "[ 2/5 ] Python controleren..."
 
 if ! command -v python3 &>/dev/null; then
     echo ""
@@ -48,9 +79,9 @@ echo "  Python $PYTHON_VER gevonden. OK"
 echo ""
 
 # --------------------------------------------------------------------------
-# Stap 2: Henk installeren of bijwerken
+# Stap 3: Henk installeren of bijwerken
 # --------------------------------------------------------------------------
-echo "[ 2/4 ] Henk installeren / bijwerken..."
+echo "[ 3/5 ] Henk installeren / bijwerken..."
 echo "  (Dit kan even duren de eerste keer)"
 echo ""
 
@@ -85,9 +116,9 @@ echo ""
 export PATH="$HOME/.local/bin:$PATH"
 
 # --------------------------------------------------------------------------
-# Stap 3: API sleutels controleren
+# Stap 4: API sleutels controleren
 # --------------------------------------------------------------------------
-echo "[ 3/4 ] Configuratie controleren..."
+echo "[ 4/5 ] Configuratie controleren..."
 
 if [ ! -f "$ENV_FILE" ]; then
     if [ -f "$REPO_DIR/.env.example" ]; then
@@ -115,14 +146,15 @@ fi
 echo ""
 
 # --------------------------------------------------------------------------
-# Stap 4: Henk-map initialiseren
+# Stap 5: Henk-map initialiseren
 # --------------------------------------------------------------------------
-echo "[ 4/4 ] Henk-werkmap voorbereiden..."
+echo "[ 5/5 ] Henk-werkmap voorbereiden..."
 
 if [ -d "$HENK_DIR" ]; then
-    echo "  Werkmap al aanwezig: $HENK_DIR"
-    echo "  Bestaande instellingen en herinneringen blijven bewaard."
+    echo "  Bestaande installatie bijgewerkt."
+    echo "  Instellingen en herinneringen blijven bewaard. OK"
 else
+    echo "  Henk wordt voor het eerst geïnstalleerd..."
     # Probeer 'henk init' te draaien
     if command -v henk &>/dev/null; then
         henk init 2>/dev/null && echo "  Nieuwe werkmap aangemaakt: $HENK_DIR OK" \
