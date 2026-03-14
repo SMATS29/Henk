@@ -6,6 +6,7 @@
 # =============================================================================
 
 HENK_DIR="$HOME/henk"
+USER_BIN=$(python3 -c "import sysconfig; print(sysconfig.get_path('scripts', 'posix_user'))" 2>/dev/null || echo "$HOME/.local/bin")
 
 clear
 echo "=============================================="
@@ -96,8 +97,8 @@ else
 fi
 
 # Verwijder ook het binaire bestand als het nog bestaat
-if [ -f "$HOME/.local/bin/henk" ]; then
-    rm -f "$HOME/.local/bin/henk"
+if [ -f "$USER_BIN/henk" ]; then
+    rm -f "$USER_BIN/henk"
     echo "  Uitvoerbaar bestand verwijderd. OK"
 fi
 echo ""
