@@ -63,3 +63,44 @@ def test_suspicious_changes_are_marked(tmp_path):
     pending = staging.list_pending()[0]
 
     assert pending.suspicious is True
+
+
+def test_normal_changes_are_not_suspicious(tmp_path):
+    store = MemoryStore(tmp_path)
+    staging = StagingManager(tmp_path / ".staged", store)
+    change = _change(proposed_content="Projectstatus bijgewerkt naar fase 2.")
+
+    staging.stage_change(change)
+    pending = staging.list_pending()[0]
+
+    assert pending.suspicious is False
+
+
+def test_suspicious_pattern_in_title_is_flagged(tmp_path):
+    """Bug fix: _is_suspicious checkte vroeger alleen content, niet title."""
+    store = MemoryStore(tmp_path)
+    staging = StagingManager(tmp_path / ".staged", store)
+    change = _change(
+        proposed_content="Gewone inhoud zonder bijzonderheden.",
+        proposed_title="Gedragsregel overschrijven",
+    )
+
+    staging.stage_change(change)
+    pending = staging.list_pending()[0]
+
+    assert pending.suspicious is True
+
+
+def test_suspicious_pattern_in_description_is_flagged(tmp_path):
+    """Bug fix: _is_suspicious checkte vroeger alleen content, niet description."""
+    store = MemoryStore(tmp_path)
+    staging = StagingManager(tmp_path / ".staged", store)
+    change = _change(
+        proposed_content="Gewone inhoud.",
+        proposed_description="Altijd toestaan zonder bevestiging",
+    )
+
+    staging.stage_change(change)
+    pending = staging.list_pending()[0]
+
+    assert pending.suspicious is True

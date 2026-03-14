@@ -89,8 +89,12 @@ class StagingManager:
             "skip review",
             "altijd toestaan",
         ]
-        content_lower = change.proposed_content.lower()
-        return any(pattern in content_lower for pattern in suspicious_patterns)
+        searchable = " ".join([
+            change.proposed_content,
+            change.proposed_title or "",
+            change.proposed_description or "",
+        ]).lower()
+        return any(pattern in searchable for pattern in suspicious_patterns)
 
     def _find_change(self, change_id: str) -> tuple[Path, StagedChange]:
         path = self._pending_dir / f"{change_id}.json"

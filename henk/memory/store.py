@@ -34,6 +34,8 @@ class MemoryStore:
     def load_item(self, path: str | Path) -> MemoryItem:
         """Laad een memory-item van schijf."""
         resolved = self._resolve_path(path)
+        if not resolved.is_relative_to(self._memory_dir):
+            raise ValueError(f"Pad valt buiten geheugenmap: {resolved}")
         text = resolved.read_text(encoding="utf-8")
         metadata, content = self._parse_document(text)
         rel_path = resolved.relative_to(self._memory_dir).as_posix()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from henk.security.source_tag import tag_output
@@ -17,12 +18,12 @@ class CodeRunnerTool(BaseTool):
     """
 
     name = "code_runner"
-    description = "Voer Python of bash code uit in beperkte omgeving."
+    description = "Voer Python of shell code uit in beperkte omgeving."
     permissions = ["write", "execute"]
     parameters = {
         "type": "object",
         "properties": {
-            "language": {"type": "string", "enum": ["python", "bash"]},
+            "language": {"type": "string", "enum": ["python", "shell"]},
             "code": {"type": "string"},
             "run_id": {"type": "string"},
         },
@@ -44,11 +45,18 @@ class CodeRunnerTool(BaseTool):
         scratch.mkdir(parents=True, exist_ok=True)
         output.mkdir(parents=True, exist_ok=True)
 
-        script_name = "script.py" if language == "python" else "script.sh"
+        if language == "python":
+            script_name = "script.py"
+            cmd = [sys.executable, str(scratch / script_name)]
+        elif sys.platform == "win32":
+            script_name = "script.bat"
+            cmd = ["cmd", "/c", str(scratch / script_name)]
+        else:
+            script_name = "script.sh"
+            cmd = ["bash", str(scratch / script_name)]
+
         script_path = scratch / script_name
         script_path.write_text(code, encoding="utf-8")
-
-        cmd = ["python", str(script_path)] if language == "python" else ["bash", str(script_path)]
         try:
             result = subprocess.run(
                 cmd,

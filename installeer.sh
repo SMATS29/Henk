@@ -112,8 +112,9 @@ else
 fi
 echo ""
 
-# Zorg dat ~/.local/bin in PATH zit (voor dit sessie)
-export PATH="$HOME/.local/bin:$PATH"
+# Bepaal het juiste gebruikerspad voor pip-installaties (platform-afhankelijk)
+USER_BIN=$(python3 -c "import sysconfig; print(sysconfig.get_path('scripts', 'posix_user'))" 2>/dev/null || echo "$HOME/.local/bin")
+export PATH="$USER_BIN:$PATH"
 
 # --------------------------------------------------------------------------
 # Stap 4: API sleutels controleren
@@ -160,8 +161,8 @@ else
         henk init 2>/dev/null && echo "  Nieuwe werkmap aangemaakt: $HENK_DIR OK" \
             || echo "  Werkmap wordt aangemaakt bij eerste gebruik. OK"
     else
-        # Henk is in ~/.local/bin maar nog niet in PATH van dit sessie
-        "$HOME/.local/bin/henk" init 2>/dev/null \
+        # Henk is in USER_BIN maar nog niet in PATH van dit sessie
+        "$USER_BIN/henk" init 2>/dev/null \
             && echo "  Nieuwe werkmap aangemaakt: $HENK_DIR OK" \
             || echo "  Werkmap wordt aangemaakt bij eerste gebruik. OK"
     fi
