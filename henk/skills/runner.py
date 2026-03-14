@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from henk.requirements import Requirements
@@ -16,7 +16,7 @@ class SkillRunner:
         self._react_loop = react_loop
 
     def run(self, skill: Skill, requirements: Requirements, on_status: Callable[[str], None] | None = None) -> str:
-        skill_run = SkillRun(skill=skill, started_at=datetime.now())
+        skill_run = SkillRun(skill=skill, started_at=datetime.now(timezone.utc))
         results: list[str] = []
 
         while skill_run.active_step is not None:
@@ -38,14 +38,15 @@ class SkillRunner:
                 step.status = StepStatus.FAILED
                 step.error = str(error)
                 self._gateway.log_skill_event("step.failed", skill.name, step.number, str(error))
+                previous = "\n".join(results)
                 return (
                     f"Stap {step.number} ({step.title}) is mislukt: {error}\n\n"
-                    f"Eerdere resultaten:\n{'\n'.join(results)}"
+                    f"Eerdere resultaten:\n{previous}"
                 )
 
             skill_run.advance()
 
-        skill_run.completed_at = datetime.now()
+        skill_run.completed_at = datetime.now(timezone.utc)
         return results[-1] if results else "Skill afgerond zonder resultaat."
 
     def _build_step_prompt(self, step: SkillStep, requirements: Requirements, previous_results: list[str]) -> str:

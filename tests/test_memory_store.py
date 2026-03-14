@@ -59,3 +59,29 @@ def test_load_core_returns_raw_content(tmp_path):
     (tmp_path / "core.md").write_text("# Kern\n\nAltijd mee", encoding="utf-8")
 
     assert store.load_core() == "# Kern\n\nAltijd mee"
+
+
+def test_load_item_rejects_absolute_path_outside_memory_dir(tmp_path):
+    """Bug fix: load_item met absoluut pad buiten memory_dir gooit een duidelijke ValueError."""
+    import pytest
+
+    mem_dir = tmp_path / "memory"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "secret.md"
+    secret.write_text("# Secret\n\nVertrouwelijk", encoding="utf-8")
+
+    store = MemoryStore(mem_dir)
+
+    with pytest.raises(ValueError, match="buiten geheugenmap"):
+        store.load_item(secret)
+
+
+def test_load_core_returns_empty_when_missing(tmp_path):
+    store = MemoryStore(tmp_path)
+    assert store.load_core() == ""
+
+
+def test_list_items_returns_empty_for_missing_layer(tmp_path):
+    store = MemoryStore(tmp_path)
+    assert store.list_items("episodes") == []

@@ -72,3 +72,37 @@ def test_tools_return_tagged_tool_result(tmp_path):
     tool = FileManagerTool([str(ws)], ws)
     res = tool.write("x.txt", "hallo", "run_1")
     assert "[TOOL:file_manager]" in str(res.data)
+
+
+def test_code_runner_executes_python_and_returns_output(tmp_path):
+    tool = CodeRunnerTool(tmp_path, max_runtime_seconds=10)
+    result = tool.execute(language="python", code='print("henk")', run_id="run_py")
+
+    assert result.success is True
+    assert "henk" in str(result.data)
+
+
+def test_code_runner_returns_failure_on_python_error(tmp_path):
+    tool = CodeRunnerTool(tmp_path, max_runtime_seconds=10)
+    result = tool.execute(language="python", code="raise ValueError('oeps')", run_id="run_err")
+
+    assert result.success is False
+
+
+def test_code_runner_output_is_tagged(tmp_path):
+    tool = CodeRunnerTool(tmp_path, max_runtime_seconds=10)
+    result = tool.execute(language="python", code='print("test")', run_id="run_tag")
+
+    assert "[TOOL:code_runner]" in str(result.data)
+
+
+def test_file_manager_read_returns_content(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "test.txt").write_text("inhoud", encoding="utf-8")
+    tool = FileManagerTool([str(ws)], ws)
+
+    result = tool.read(str(ws / "test.txt"))
+
+    assert result.success is True
+    assert "inhoud" in str(result.data)

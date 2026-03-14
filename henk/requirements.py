@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 
@@ -18,7 +18,7 @@ class Requirements:
     specifications: str = ""
     status: RequirementsStatus = RequirementsStatus.DRAFT
     skill_name: str | None = None
-    created_at: datetime = field(default_factory=datetime.now)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     confirmed_at: datetime | None = None
     completed_at: datetime | None = None
     result: str | None = None
@@ -30,17 +30,17 @@ class Requirements:
 
     def confirm(self) -> None:
         self.status = RequirementsStatus.CONFIRMED
-        self.confirmed_at = datetime.now()
+        self.confirmed_at = datetime.now(timezone.utc)
 
     def start_execution(self) -> None:
         self.status = RequirementsStatus.EXECUTING
 
     def complete(self, result: str) -> None:
         self.status = RequirementsStatus.EVALUATED
-        self.completed_at = datetime.now()
+        self.completed_at = datetime.now(timezone.utc)
         self.result = result
 
     def fail(self, reason: str) -> None:
         self.status = RequirementsStatus.EVALUATED
-        self.completed_at = datetime.now()
+        self.completed_at = datetime.now(timezone.utc)
         self.result = f"Mislukt: {reason}"
