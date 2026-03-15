@@ -30,9 +30,10 @@ class AnthropicProvider(BaseProvider):
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_tokens": max_tokens,
-            "system": system,
             "messages": messages,
         }
+        if system:
+            kwargs["system"] = system
         if tools:
             kwargs["tools"] = tools
 

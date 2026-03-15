@@ -58,7 +58,8 @@ def test_init_creates_files(tmp_path, monkeypatch):
     assert "providers:" in config_text
     assert "roles:" in config_text
     assert "user_name:" in config_text
-    assert "primary: anthropic/claude-sonnet-4-6" in config_text
+    assert "identity_prompt_enabled: false" in config_text
+    assert "primary: openai/gpt-5.2" in config_text
 
 
 def test_init_existing_no_overwrite(tmp_path, monkeypatch):

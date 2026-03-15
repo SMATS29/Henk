@@ -1,0 +1,2 @@
+{"timestamp": "2026-03-15T21:49:57.113951+00:00", "type": "brain.token_usage", "session_id": "b23a9f496d00", "run_id": "run_20260315_224957_e235", "tokens_input": 100, "tokens_output": 50}
+{"timestamp": "2026-03-15T21:49:57.113951+00:00", "type": "brain.token_usage", "session_id": "b23a9f496d00", "run_id": "run_20260315_224957_e235", "tokens_input": 200, "tokens_output": 80}

@@ -40,11 +40,7 @@ COMMANDS: list[SlashCommand] = [
 ]
 
 MODEL_PRESETS: dict[str, list[str]] = {
-    "anthropic": ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"],
-    "openai": ["gpt-4o"],
-    "deepseek": ["deepseek-chat"],
-    "ollama": ["qwen2.5:3b"],
-    "lmstudio": [],
+    "openai": ["gpt-5.2", "gpt-5-mini"],
 }
 
 

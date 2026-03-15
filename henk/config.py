@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,7 @@ from dotenv import load_dotenv
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "henk": {"name": "Henk", "language": "nl", "user_name": ""},
+    "henk": {"name": "Henk", "language": "nl", "user_name": "", "identity_prompt_enabled": False},
     "providers": {
         "anthropic": {"api_key_env": "ANTHROPIC_API_KEY"},
         "openai": {"api_key_env": "OPENAI_API_KEY"},
@@ -20,15 +21,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "deepseek": {"api_key_env": "DEEPSEEK_API_KEY"},
     },
     "roles": {
-        "fast": {"primary": "anthropic/claude-haiku-4-5", "fallback": ["ollama/qwen2.5:3b"]},
-        "default": {
-            "primary": "anthropic/claude-sonnet-4-6",
-            "fallback": ["openai/gpt-4o", "deepseek/deepseek-chat"],
-        },
-        "heavy": {
-            "primary": "anthropic/claude-opus-4-6",
-            "fallback": ["anthropic/claude-sonnet-4-6"],
-        },
+        "fast": {"primary": "openai/gpt-5-mini", "fallback": ["openai/gpt-5.2"]},
+        "default": {"primary": "openai/gpt-5.2", "fallback": ["openai/gpt-5-mini"]},
+        "heavy": {"primary": "openai/gpt-5.2", "fallback": ["openai/gpt-5-mini"]},
     },
     "security": {
         "proxy": {
@@ -108,6 +103,10 @@ class Config:
     @property
     def user_name(self) -> str:
         return str(self._data.get("henk", {}).get("user_name", "")).strip()
+
+    @property
+    def identity_prompt_enabled(self) -> bool:
+        return bool(self._data.get("henk", {}).get("identity_prompt_enabled", True))
 
     @property
     def data_dir(self) -> Path:
@@ -196,12 +195,12 @@ class Config:
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    result = base.copy()
+    result = deepcopy(base)
     for key, value in override.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
             result[key] = _deep_merge(result[key], value)
         else:
-            result[key] = value
+            result[key] = deepcopy(value)
     return result
 
 

@@ -1,0 +1,2 @@
+{"timestamp": "2026-03-15T21:49:56.892743+00:00", "type": "user_message", "session_id": "d75e2a174227", "role": "user", "content": "test bericht"}
+{"timestamp": "2026-03-15T21:49:56.893749+00:00", "type": "assistant_message", "session_id": "d75e2a174227", "role": "assistant", "content": "Via loop"}

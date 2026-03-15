@@ -1,0 +1,2 @@
+{"timestamp": "2026-03-15T21:49:56.984663+00:00", "session_id": "ae40ce7de4a5", "type": "model.request", "purpose": "classify_input", "role": "fast", "provider": "dummy/m", "message_count": 1, "has_tools": false, "max_tokens": 1024}
+{"timestamp": "2026-03-15T21:49:56.986207+00:00", "session_id": "ae40ce7de4a5", "type": "model.response", "purpose": "classify_input", "role": "fast", "provider": "dummy/m", "input_tokens": 3, "output_tokens": 2, "tool_call_count": 0}

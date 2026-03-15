@@ -35,7 +35,7 @@ def test_completer_ignores_plain_text():
 def test_message_for_missing_credentials_error():
     error = ProviderSelectionError(
         ModelRole.DEFAULT,
-        [ProviderAttempt("openai/gpt-4o", "missing_credentials")],
+        [ProviderAttempt("openai/gpt-5.2", "missing_credentials")],
     )
 
     assert _message_for_model_error(error) == "Ik kan geen model bereiken omdat er geen API key is ingesteld."
@@ -73,9 +73,9 @@ def test_startup_missing_key_message_lists_roles(monkeypatch):
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
 
     data = deepcopy(DEFAULT_CONFIG)
-    data["roles"]["fast"] = {"primary": "anthropic/claude-haiku-4-5", "fallback": []}
-    data["roles"]["default"] = {"primary": "openai/gpt-4o", "fallback": []}
-    data["roles"]["heavy"] = {"primary": "deepseek/deepseek-chat", "fallback": []}
+    data["roles"]["fast"] = {"primary": "openai/gpt-5-mini", "fallback": []}
+    data["roles"]["default"] = {"primary": "openai/gpt-5.2", "fallback": []}
+    data["roles"]["heavy"] = {"primary": "openai/gpt-5.2", "fallback": []}
     router = ModelRouter(Config(data))
 
     message = _startup_missing_key_message(router)

@@ -116,6 +116,22 @@ def test_openai_compatible_handles_missing_usage(mock_openai):
     assert response.output_tokens == 0
 
 
+@patch("henk.router.providers.openai_provider.openai.OpenAI")
+def test_openai_compatible_skips_empty_system_message(mock_openai):
+    mock_client = MagicMock()
+    mock_openai.return_value = mock_client
+    msg = SimpleNamespace(content="antwoord", tool_calls=None)
+    mock_client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=msg)], usage=None
+    )
+
+    provider = OpenAICompatibleProvider(api_key="k", model="m")
+    provider.chat(messages=[{"role": "user", "content": "h"}], system="")
+
+    sent_messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+    assert sent_messages == [{"role": "user", "content": "h"}]
+
+
 @patch("henk.router.providers.anthropic.anthropic.Anthropic")
 def test_anthropic_provider_wraps_network_errors(mock_cls):
     mock_client = MagicMock()

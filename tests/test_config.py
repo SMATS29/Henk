@@ -12,6 +12,8 @@ def test_default_config_has_required_fields():
     assert config.skills_enabled is True
     assert config.heartbeat_interval == 30
     assert config.user_name == ""
+    assert config.identity_prompt_enabled is False
+    assert config.roles_config["default"]["primary"] == "openai/gpt-5.2"
 
 
 def test_deep_merge():
@@ -26,10 +28,11 @@ def test_load_config_with_yaml(tmp_path):
     data_dir.mkdir()
     config_file = data_dir / "henk.yaml"
     config_file.write_text(
-        "henk:\n  user_name: Joost\nroles:\n  default:\n    primary: openai/gpt-4o\n",
+        "henk:\n  user_name: Joost\n  identity_prompt_enabled: true\nroles:\n  default:\n    primary: openai/gpt-5-mini\n",
         encoding="utf-8",
     )
 
     config = load_config(data_dir)
-    assert config.roles_config["default"]["primary"] == "openai/gpt-4o"
+    assert config.roles_config["default"]["primary"] == "openai/gpt-5-mini"
+    assert config.identity_prompt_enabled is True
     assert config.user_name == "Joost"

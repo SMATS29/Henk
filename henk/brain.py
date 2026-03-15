@@ -195,18 +195,21 @@ class Brain:
         response = self._model_gateway.chat(
             role=ModelRole.FAST,
             messages=[{"role": "user", "content": prompt}],
-            system=SYSTEM_PROMPT,
+            system=self._build_system_prompt(""),
             purpose="summarize_session",
         ).response
         return response.text
 
     def _build_system_prompt(self, user_message: str) -> str:
+        parts: list[str] = []
+        if self._config.identity_prompt_enabled:
+            parts.append(SYSTEM_PROMPT)
         memory_context = ""
         if self._memory_retrieval:
             memory_context = self._memory_retrieval.get_context(user_message)
         if memory_context:
-            return f"{SYSTEM_PROMPT}\n\n## Geheugen\n{memory_context}"
-        return SYSTEM_PROMPT
+            parts.append(f"## Geheugen\n{memory_context}")
+        return "\n\n".join(parts)
 
     def _anthropic_tools(self) -> list[dict[str, Any]]:
         return [

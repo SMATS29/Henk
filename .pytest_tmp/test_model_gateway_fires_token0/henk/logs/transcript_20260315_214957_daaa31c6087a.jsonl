@@ -1,0 +1,2 @@
+{"timestamp": "2026-03-15T21:49:57.211809+00:00", "session_id": "daaa31c6087a", "type": "model.request", "purpose": "think", "role": "default", "provider": "dummy/m", "message_count": 1, "has_tools": false, "max_tokens": 1024}
+{"timestamp": "2026-03-15T21:49:57.211809+00:00", "session_id": "daaa31c6087a", "type": "model.response", "purpose": "think", "role": "default", "provider": "dummy/m", "input_tokens": 12, "output_tokens": 7, "tool_call_count": 0}

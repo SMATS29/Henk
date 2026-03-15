@@ -148,7 +148,7 @@ class DummyRouter:
 
 class FailingRouter:
     def get_provider(self, role=ModelRole.DEFAULT, require_tools=False):
-        raise ProviderSelectionError(role, [ProviderAttempt("openai/gpt-4o", "missing_credentials")])
+        raise ProviderSelectionError(role, [ProviderAttempt("openai/gpt-5.2", "missing_credentials")])
 
     def provider_label(self, provider):
         return "n/a"

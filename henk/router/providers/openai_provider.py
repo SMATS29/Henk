@@ -31,7 +31,9 @@ class OpenAICompatibleProvider(BaseProvider):
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 1024,
     ) -> ProviderResponse:
-        openai_messages = [{"role": "system", "content": system}] + messages
+        openai_messages = messages.copy()
+        if system:
+            openai_messages = [{"role": "system", "content": system}] + openai_messages
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_tokens": max_tokens,

@@ -1,0 +1,2 @@
+{"timestamp": "2026-03-15T21:49:56.871606+00:00", "type": "user_message", "session_id": "e5f1d45f22a7", "role": "user", "content": "test bericht"}
+{"timestamp": "2026-03-15T21:49:56.872613+00:00", "type": "assistant_message", "session_id": "e5f1d45f22a7", "role": "assistant", "content": "Test antwoord van Henk."}

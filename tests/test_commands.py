@@ -71,8 +71,8 @@ def test_dispatch_model_updates_role_and_env(tmp_path):
     answers = iter([
         "1",
         "1",
-        "openai/gpt-4o",
-        "deepseek/deepseek-chat",
+        "openai/gpt-5.2",
+        "openai/gpt-5-mini",
         "2",
         "1",
         "anthropic-test-key",
@@ -90,8 +90,8 @@ def test_dispatch_model_updates_role_and_env(tmp_path):
 
     config_file = tmp_path / "henk.yaml"
     config_text = config_file.read_text(encoding="utf-8")
-    assert "primary: openai/gpt-4o" in config_text
-    assert "- deepseek/deepseek-chat" in config_text
+    assert "primary: openai/gpt-5.2" in config_text
+    assert "- openai/gpt-5-mini" in config_text
     assert "ANTHROPIC_API_KEY=anthropic-test-key" in env_path.read_text(encoding="utf-8")
 
 

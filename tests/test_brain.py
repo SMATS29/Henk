@@ -61,9 +61,18 @@ def _make_config() -> Config:
     return Config(data)
 
 
-def test_brain_uses_system_prompt():
+def test_brain_skips_identity_prompt_when_disabled():
     provider = DummyProvider([ProviderResponse(text="Hoi!", tool_calls=None, raw=None)])
     brain = Brain(_make_config(), model_gateway=DummyModelGateway(provider))
+    brain.think("hallo")
+    assert provider.calls[0]["system"] == ""
+
+
+def test_brain_uses_system_prompt_when_enabled():
+    provider = DummyProvider([ProviderResponse(text="Hoi!", tool_calls=None, raw=None)])
+    config = _make_config()
+    config.raw["henk"]["identity_prompt_enabled"] = True
+    brain = Brain(config, model_gateway=DummyModelGateway(provider))
     brain.think("hallo")
     assert provider.calls[0]["system"] == SYSTEM_PROMPT
 
@@ -90,6 +99,20 @@ def test_brain_appends_memory_context_to_system_prompt():
     retrieval.get_context.return_value = "Project Henk"
 
     brain = Brain(_make_config(), model_gateway=DummyModelGateway(provider), memory_retrieval=retrieval)
+    brain.think("status?")
+
+    system_prompt = provider.calls[0]["system"]
+    assert system_prompt == "## Geheugen\nProject Henk"
+
+
+def test_brain_appends_memory_context_to_system_prompt_with_identity_when_enabled():
+    provider = DummyProvider([ProviderResponse(text="Hoi!", tool_calls=None, raw=None)])
+    retrieval = MagicMock()
+    retrieval.get_context.return_value = "Project Henk"
+    config = _make_config()
+    config.raw["henk"]["identity_prompt_enabled"] = True
+
+    brain = Brain(config, model_gateway=DummyModelGateway(provider), memory_retrieval=retrieval)
     brain.think("status?")
 
     system_prompt = provider.calls[0]["system"]
@@ -129,6 +152,7 @@ def test_summarize_session_uses_history():
     assert summary == "Samenvatting"
     prompt = provider.calls[1]["messages"][0]["content"]
     assert "Gebruiker: wat deden we?" in prompt
+    assert provider.calls[1]["system"] == ""
 
 
 def test_brain_tracks_tokens_from_provider_responses():
