@@ -24,6 +24,40 @@ class KillSwitchActive(Exception):
         super().__init__(f"Kill switch actief: {switch_type}")
 
 
+class RunStatus(str, Enum):
+    """Status van een run."""
+
+    ACTIVE = "active"
+    DONE = "done"
+    FAILED = "failed"
+
+
+@dataclass
+class RunState:
+    """Interne state van een run."""
+
+    run_id: str
+    summary: str
+    status: RunStatus
+    started_at: datetime
+    ended_at: datetime | None = None
+    tokens_input: int = 0
+    tokens_output: int = 0
+
+
+@dataclass(frozen=True)
+class TaskInfo:
+    """Read-only snapshot van een run voor het taakpaneel."""
+
+    run_id: str
+    summary: str
+    status: RunStatus
+    started_at: datetime
+    ended_at: datetime | None
+    tokens_input: int
+    tokens_output: int
+
+
 class LoopDecision(str, Enum):
     """Uitkomst van tool-call validatie."""
 
@@ -54,6 +88,9 @@ class Gateway:
         self._call_history: set[str] = set()
         self._current_run_id: str | None = None
         self._react_loop = None
+        self._runs: dict[str, RunState] = {}
+        self._session_tokens_input: int = 0
+        self._session_tokens_output: int = 0
 
     @property
     def tool_call_count(self) -> int:
@@ -79,12 +116,16 @@ class Gateway:
     def max_retries_technical(self) -> int:
         return self._config.max_retries_technical
 
-    def reset_counters(self) -> None:
-        """Reset tellers voor een nieuwe taak."""
+    def reset_loop_counters(self) -> None:
+        """Reset loop-tellers (tool-limieten) zonder run-state te wissen."""
         self._tool_call_count = 0
         self._content_retry_count = 0
         self._technical_retry_count = 0
         self._call_history = set()
+
+    def reset_counters(self) -> None:
+        """Reset alle tellers inclusief run-state."""
+        self.reset_loop_counters()
         self._current_run_id = None
 
     def check_kill_switches(self) -> str | None:
@@ -146,6 +187,79 @@ class Gateway:
         """Koppel de ReAct-loop aan de Gateway."""
         self._react_loop = react_loop
 
+    def start_run(self, summary: str) -> str:
+        """Start een nieuwe run. Geeft run_id terug."""
+        self.reset_loop_counters()
+        run_id = self._ensure_run_id()
+        self._runs[run_id] = RunState(
+            run_id=run_id,
+            summary=summary[:80],
+            status=RunStatus.ACTIVE,
+            started_at=datetime.now(),
+        )
+        return run_id
+
+    def complete_run(self, run_id: str | None = None) -> None:
+        """Markeer een run als afgerond."""
+        rid = run_id or self._current_run_id
+        if rid and rid in self._runs:
+            self._runs[rid].status = RunStatus.DONE
+            self._runs[rid].ended_at = datetime.now()
+
+    def fail_run(self, run_id: str | None = None) -> None:
+        """Markeer een run als mislukt."""
+        rid = run_id or self._current_run_id
+        if rid and rid in self._runs:
+            self._runs[rid].status = RunStatus.FAILED
+            self._runs[rid].ended_at = datetime.now()
+
+    def record_token_usage(self, tokens_input: int, tokens_output: int) -> None:
+        """Registreer tokengebruik (brain.token_usage) voor actieve run en sessie."""
+        if tokens_input < 0 or tokens_output < 0:
+            return
+        self._session_tokens_input += tokens_input
+        self._session_tokens_output += tokens_output
+        rid = self._current_run_id
+        if rid and rid in self._runs:
+            self._runs[rid].tokens_input += tokens_input
+            self._runs[rid].tokens_output += tokens_output
+        self._transcript.log_event(
+            {
+                "type": "brain.token_usage",
+                "session_id": self._transcript.session_id,
+                "run_id": rid,
+                "tokens_input": tokens_input,
+                "tokens_output": tokens_output,
+            }
+        )
+
+    def get_task_state(self) -> list[TaskInfo]:
+        """Geef een snapshot van alle runs in deze sessie."""
+        return [
+            TaskInfo(
+                run_id=r.run_id,
+                summary=r.summary,
+                status=r.status,
+                started_at=r.started_at,
+                ended_at=r.ended_at,
+                tokens_input=r.tokens_input,
+                tokens_output=r.tokens_output,
+            )
+            for r in self._runs.values()
+        ]
+
+    @property
+    def session_tokens_input(self) -> int:
+        return self._session_tokens_input
+
+    @property
+    def session_tokens_output(self) -> int:
+        return self._session_tokens_output
+
+    @property
+    def session_tokens_total(self) -> int:
+        return self._session_tokens_input + self._session_tokens_output
+
     def process(self, user_message: str, on_status: Callable[[str], None] | None = None) -> str:
         """Verwerk een gebruikersbericht via de ReAct-loop."""
         active_switch = self.check_kill_switches()
@@ -155,12 +269,17 @@ class Gateway:
         if not user_message or not user_message.strip():
             return ""
 
-        self.reset_counters()
+        run_id = self.start_run(user_message)
         self._transcript.write("user", user_message)
-        if self._react_loop is None:
-            response = self._brain.think(user_message)
-        else:
-            response = self._react_loop.run(user_message, on_status=on_status)
+        try:
+            if self._react_loop is None:
+                response = self._brain.think(user_message)
+            else:
+                response = self._react_loop.run(user_message, on_status=on_status)
+            self.complete_run(run_id)
+        except Exception:
+            self.fail_run(run_id)
+            raise
         self._transcript.write("assistant", response)
         return response
 

@@ -5,7 +5,7 @@ import json
 import pytest
 
 from henk.tools.base import ToolResult
-from henk.gateway import Gateway, KillSwitchActive
+from henk.gateway import Gateway, KillSwitchActive, RunStatus
 from henk.model_gateway import ModelGateway
 from henk.router import ModelRole, ProviderAttempt, ProviderSelectionError
 from henk.router.providers.base import ProviderResponse
@@ -207,3 +207,154 @@ def test_model_gateway_logs_error_events_to_transcript(config):
     assert record["type"] == "model.error"
     assert record["reason"] == "selection_failed"
     assert record["attempts"][0]["reason"] == "missing_credentials"
+
+
+# --- Token tracking & run lifecycle tests ---
+
+
+def test_start_run_creates_run_state(config, mock_brain):
+    transcript = TranscriptWriter(config.logs_dir)
+    gateway = Gateway(config, mock_brain, transcript)
+
+    run_id = gateway.start_run("Analyseer Q3-rapport voor Joost")
+
+    assert run_id is not None
+    assert run_id.startswith("run_")
+    tasks = gateway.get_task_state()
+    assert len(tasks) == 1
+    assert tasks[0].run_id == run_id
+    assert tasks[0].summary == "Analyseer Q3-rapport voor Joost"
+    assert tasks[0].status == RunStatus.ACTIVE
+    assert tasks[0].tokens_input == 0
+    assert tasks[0].tokens_output == 0
+
+
+def test_start_run_truncates_summary_at_80_chars(config, mock_brain):
+    transcript = TranscriptWriter(config.logs_dir)
+    gateway = Gateway(config, mock_brain, transcript)
+
+    long_summary = "x" * 120
+    gateway.start_run(long_summary)
+
+    tasks = gateway.get_task_state()
+    assert len(tasks[0].summary) == 80
+
+
+def test_complete_run_sets_done_status(config, mock_brain):
+    transcript = TranscriptWriter(config.logs_dir)
+    gateway = Gateway(config, mock_brain, transcript)
+
+    run_id = gateway.start_run("test taak")
+    gateway.complete_run(run_id)
+
+    tasks = gateway.get_task_state()
+    assert tasks[0].status == RunStatus.DONE
+    assert tasks[0].ended_at is not None
+
+
+def test_fail_run_sets_failed_status(config, mock_brain):
+    transcript = TranscriptWriter(config.logs_dir)
+    gateway = Gateway(config, mock_brain, transcript)
+
+    run_id = gateway.start_run("test taak")
+    gateway.fail_run(run_id)
+
+    tasks = gateway.get_task_state()
+    assert tasks[0].status == RunStatus.FAILED
+    assert tasks[0].ended_at is not None
+
+
+def test_record_token_usage_accumulates_per_run(config, mock_brain):
+    transcript = TranscriptWriter(config.logs_dir)
+    gateway = Gateway(config, mock_brain, transcript)
+
+    run_id = gateway.start_run("test taak")
+    gateway.record_token_usage(100, 50)
+    gateway.record_token_usage(200, 80)
+
+    tasks = gateway.get_task_state()
+    assert tasks[0].tokens_input == 300
+    assert tasks[0].tokens_output == 130
+
+
+def test_record_token_usage_accumulates_session_totals(config, mock_brain):
+    transcript = TranscriptWriter(config.logs_dir)
+    gateway = Gateway(config, mock_brain, transcript)
+
+    run_id = gateway.start_run("taak 1")
+    gateway.record_token_usage(100, 50)
+    gateway.complete_run(run_id)
+
+    run_id2 = gateway.start_run("taak 2")
+    gateway.record_token_usage(200, 80)
+
+    assert gateway.session_tokens_input == 300
+    assert gateway.session_tokens_output == 130
+    assert gateway.session_tokens_total == 430
+
+
+def test_record_token_usage_without_active_run(config, mock_brain):
+    transcript = TranscriptWriter(config.logs_dir)
+    gateway = Gateway(config, mock_brain, transcript)
+
+    gateway.record_token_usage(100, 50)
+
+    assert gateway.session_tokens_input == 100
+    assert gateway.session_tokens_output == 50
+    assert gateway.get_task_state() == []
+
+
+def test_record_token_usage_ignores_negative(config, mock_brain):
+    transcript = TranscriptWriter(config.logs_dir)
+    gateway = Gateway(config, mock_brain, transcript)
+
+    gateway.record_token_usage(-10, 50)
+    gateway.record_token_usage(10, -50)
+
+    assert gateway.session_tokens_total == 0
+
+
+def test_record_token_usage_logs_brain_token_usage_event(config, mock_brain):
+    transcript = TranscriptWriter(config.logs_dir)
+    gateway = Gateway(config, mock_brain, transcript)
+
+    run_id = gateway.start_run("test")
+    gateway.record_token_usage(100, 50)
+
+    records = [json.loads(line) for line in transcript.file_path.read_text(encoding="utf-8").splitlines()]
+    token_events = [r for r in records if r.get("type") == "brain.token_usage"]
+    assert len(token_events) == 1
+    assert token_events[0]["run_id"] == run_id
+    assert token_events[0]["tokens_input"] == 100
+    assert token_events[0]["tokens_output"] == 50
+
+
+def test_get_task_state_returns_frozen_snapshots(config, mock_brain):
+    transcript = TranscriptWriter(config.logs_dir)
+    gateway = Gateway(config, mock_brain, transcript)
+
+    gateway.start_run("taak 1")
+    gateway.record_token_usage(100, 50)
+    tasks = gateway.get_task_state()
+
+    # Wijzigen van originele state mag geen effect hebben op snapshot
+    gateway.record_token_usage(200, 100)
+    assert tasks[0].tokens_input == 100
+
+
+def test_model_gateway_fires_token_callback(config):
+    provider = DummyProvider(ProviderResponse(text="Hoi", tool_calls=None, raw=None, input_tokens=12, output_tokens=7))
+    transcript = TranscriptWriter(config.logs_dir)
+    model_gateway = ModelGateway(DummyRouter(provider), transcript)
+
+    received = []
+    model_gateway.on_token_usage = lambda inp, out: received.append((inp, out))
+
+    model_gateway.chat(
+        role=ModelRole.DEFAULT,
+        messages=[{"role": "user", "content": "hallo"}],
+        system="s",
+        purpose="think",
+    )
+
+    assert received == [(12, 7)]

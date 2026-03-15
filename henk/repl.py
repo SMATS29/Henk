@@ -169,7 +169,7 @@ def start_repl(config: Config, console: Console) -> None:
     from henk.router.providers.base import ProviderRequestError
     from henk.security.proxy import SecurityProxy
     from henk.skills import SkillRunner, SkillSelector
-    from henk.spinner import Spinner
+    from henk.task_display import TaskDisplay
     from henk.tools.code_runner import CodeRunnerTool
     from henk.tools.file_manager import FileManagerTool
     from henk.tools.memory_write import MemoryWriteTool
@@ -183,6 +183,7 @@ def start_repl(config: Config, console: Console) -> None:
     skill_selector = SkillSelector(config.skills_dir, model_gateway) if config.skills_enabled else None
     brain = Brain(config, model_gateway=model_gateway, memory_retrieval=retrieval, skill_selector=skill_selector)
     gateway = Gateway(config, brain, transcript)
+    model_gateway.on_token_usage = gateway.record_token_usage
     proxy = SecurityProxy(config.proxy_allowed_domains, config.proxy_allowed_methods)
 
     heartbeat = Heartbeat(interval_seconds=config.heartbeat_interval)
@@ -203,24 +204,36 @@ def start_repl(config: Config, console: Console) -> None:
     react_loop = ReactLoop(brain=brain, gateway=gateway, tools=tools)
     skill_runner = SkillRunner(brain, gateway, react_loop)
     gateway.set_react_loop(react_loop)
-    spinner = Spinner(console)
+    task_display = TaskDisplay(console, gateway)
 
     hard = config.control_dir / "hard_stop"
     if hard.exists() and hard.read_text(encoding="utf-8").strip().lower() == "true":
         console.print("[red]Henk is gestopt. Typ /resume om te hervatten.[/red]")
 
     try:
-        print_henk(console, gateway.get_greeting(), brain.token_tracker)
+        print_henk(console, gateway.get_greeting(), gateway)
     except Exception:
-        print_henk(console, "Hoi. Wat kan ik voor je doen?", brain.token_tracker)
+        print_henk(console, "Hoi. Wat kan ik voor je doen?", gateway)
 
     startup_message = _startup_missing_key_message(router)
     if startup_message:
-        print_henk(console, startup_message, brain.token_tracker)
+        print_henk(console, startup_message, gateway)
 
     key_bindings, shift_enter_supported = _build_key_bindings()
     if not shift_enter_supported:
         console.print("[dim]Shift+Enter wordt in deze terminal niet apart herkend. Typ /help voor uitleg.[/dim]\n")
+
+    def _bottom_toolbar():
+        total = gateway.session_tokens_total
+        inp = gateway.session_tokens_input
+        out = gateway.session_tokens_output
+        if total < 1000:
+            total_str = f"{total} tokens"
+        else:
+            total_str = f"{total / 1000:.1f}k tokens"
+        inp_str = str(inp) if inp < 1000 else f"{inp / 1000:.1f}k"
+        out_str = str(out) if out < 1000 else f"{out / 1000:.1f}k"
+        return HTML(f"<b>Sessie:</b> {total_str}  ({inp_str} in \u00b7 {out_str} uit)")
 
     session = PromptSession(
         completer=_build_completer(),
@@ -230,6 +243,7 @@ def start_repl(config: Config, console: Console) -> None:
         key_bindings=key_bindings,
         multiline=True,
         prompt_continuation="  ",
+        bottom_toolbar=_bottom_toolbar,
     )
     command_context = {
         "brain": brain,
@@ -262,31 +276,37 @@ def start_repl(config: Config, console: Console) -> None:
                 if brain.active_requirements and brain.active_requirements.status == RequirementsStatus.CONFIRMED:
                     requirements = brain.active_requirements
                     requirements.start_execution()
-                    if requirements.skill_name and skill_selector:
-                        skill = skill_selector.select(requirements.task_description)
-                        if skill:
-                            spinner.start("Henk denkt...")
-                            response = skill_runner.run(skill, requirements, on_status=spinner.update)
-                            spinner.stop()
+                    run_id = gateway.start_run(requirements.task_description)
+                    try:
+                        if requirements.skill_name and skill_selector:
+                            skill = skill_selector.select(requirements.task_description)
+                            if skill:
+                                task_display.start("Henk denkt...")
+                                response = skill_runner.run(skill, requirements, on_status=task_display.update)
+                                task_display.stop()
+                            else:
+                                task_display.start("Henk denkt...")
+                                response = react_loop.run(requirements.task_description, on_status=task_display.update)
+                                task_display.stop()
                         else:
-                            spinner.start("Henk denkt...")
-                            response = react_loop.run(requirements.task_description, on_status=spinner.update)
-                            spinner.stop()
-                    else:
-                        spinner.start("Henk denkt...")
-                        response = react_loop.run(
-                            requirements.task_description + "\n\nEisen:\n" + requirements.specifications,
-                            on_status=spinner.update,
-                        )
-                        spinner.stop()
+                            task_display.start("Henk denkt...")
+                            response = react_loop.run(
+                                requirements.task_description + "\n\nEisen:\n" + requirements.specifications,
+                                on_status=task_display.update,
+                            )
+                            task_display.stop()
+                        gateway.complete_run(run_id)
+                    except Exception:
+                        gateway.fail_run(run_id)
+                        raise
                     requirements.complete(response)
                     brain.active_requirements = None
                 elif brain.active_requirements:
-                    spinner.start("Henk denkt...")
+                    task_display.start("Henk denkt...")
                     response = brain.refine_requirements(stripped, brain.active_requirements)
-                    spinner.stop()
+                    task_display.stop()
                 else:
-                    spinner.start("Henk denkt...")
+                    task_display.start("Henk denkt...")
                     kind = brain.classify_input(stripped)
                     if kind == "taak":
                         req = Requirements(task_description=stripped)
@@ -297,19 +317,23 @@ def start_repl(config: Config, console: Console) -> None:
                         brain.active_requirements = req
                         response = brain.refine_requirements(stripped, req)
                     else:
-                        response = gateway.process(stripped, on_status=spinner.update)
-                    spinner.stop()
+                        response = gateway.process(stripped, on_status=task_display.update)
+                    task_display.stop()
 
                 if response:
-                    print_henk(console, response, brain.token_tracker)
+                    print_henk(console, response, gateway)
+                    task_display.print_static_panel()
             except KillSwitchActive as error:
-                spinner.stop()
+                task_display.stop()
+                gateway.fail_run()
                 console.print(f"[red]Henk is gestopt ({error.switch_type}). Typ /resume om te hervatten.[/red]")
             except (ProviderSelectionError, ProviderRequestError) as error:
-                spinner.stop()
+                task_display.stop()
+                gateway.fail_run()
                 console.print(f"[red]{_message_for_model_error(error)}[/red]\n")
             except Exception:
-                spinner.stop()
+                task_display.stop()
+                gateway.fail_run()
                 console.print("[red]Ik kan even niet bij mijn brein. Check je API key of internetverbinding.[/red]\n")
     except KeyboardInterrupt:
         pass

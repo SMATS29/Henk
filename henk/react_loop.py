@@ -28,7 +28,7 @@ class ReactLoop:
 
     def run(self, user_message: str, on_status: Callable[[str], None] | None = None) -> str:
         """Voer een volledige ReAct-cyclus uit voor een gebruikersbericht."""
-        self._gateway.reset_counters()
+        self._gateway.reset_loop_counters()
 
         def execute_tool(tool_name: str, params: dict[str, Any]) -> ToolResult:
             mapped_name, mapped_params = self._map_tool(tool_name, params)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, Callable
 
 from henk.router import ModelRole, ModelRouter, ProviderSelectionError
 from henk.router.providers.base import BaseProvider, ProviderRequestError, ProviderResponse
@@ -25,6 +25,7 @@ class ModelGateway:
         self._transcript = transcript
         self._token_tracker = TokenTracker()
         self._call_count = 0
+        self._on_token_usage: Callable[[int, int], None] | None = None
 
     @property
     def token_tracker(self) -> TokenTracker:
@@ -33,6 +34,14 @@ class ModelGateway:
     @property
     def call_count(self) -> int:
         return self._call_count
+
+    @property
+    def on_token_usage(self) -> Callable[[int, int], None] | None:
+        return self._on_token_usage
+
+    @on_token_usage.setter
+    def on_token_usage(self, callback: Callable[[int, int], None] | None) -> None:
+        self._on_token_usage = callback
 
     def chat(
         self,
@@ -89,6 +98,8 @@ class ModelGateway:
             raise
 
         self._token_tracker.add(response.input_tokens, response.output_tokens)
+        if self._on_token_usage:
+            self._on_token_usage(response.input_tokens, response.output_tokens)
         self._log_event(
             {
                 "type": "model.response",
