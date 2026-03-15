@@ -392,41 +392,42 @@ def test_install_wrapper_remains_thin():
     repo_dir = Path(__file__).resolve().parents[1]
     pyproject = (repo_dir / "pyproject.toml").read_text(encoding="utf-8")
     install_wrapper = (repo_dir / "installeer.sh").read_text(encoding="utf-8")
+    deinstall_wrapper = (repo_dir / "deinstalleer.sh").read_text(encoding="utf-8")
     mac_install_command = (repo_dir / "Henk Installeren.command").read_text(encoding="utf-8")
     mac_uninstall_command = (repo_dir / "Henk Deinstalleren.command").read_text(encoding="utf-8")
     desktop_entry = (repo_dir / "Henk Installeren.desktop").read_text(encoding="utf-8")
     uninstall_desktop_entry = (repo_dir / "Henk Deinstalleren.desktop").read_text(encoding="utf-8")
+    win_install_bat = (repo_dir / "Henk Installeren.bat").read_text(encoding="utf-8")
+    win_deinstall_bat = (repo_dir / "Henk Deinstalleren.bat").read_text(encoding="utf-8")
 
     assert "[tool.setuptools.packages.find]" in pyproject
     assert 'include = ["henk*"]' in pyproject
     assert 'exclude = ["skills*", "tests*"]' in pyproject
+    # installeer.sh thin wrapper
     assert "install.py" in install_wrapper
     assert "brew install" not in install_wrapper
     assert "winget install" not in install_wrapper
     assert "pip install" not in install_wrapper
+    # deinstalleer.sh thin wrapper
+    assert "deinstalleer.py" in deinstall_wrapper
+    assert len(deinstall_wrapper.splitlines()) < 20
+    assert "rm -rf" not in deinstall_wrapper
+    assert "pip uninstall" not in deinstall_wrapper
+    # macOS install command
     assert "python3 install.py" in mac_install_command
     assert "HENK_SKIP_INTERNAL_PAUSE=1" in mac_install_command
     assert 'read -rp "Druk op Enter om dit venster te sluiten..."' in mac_install_command
     assert "brew install" not in mac_install_command
     assert "pip install" not in mac_install_command
-    assert "bash deinstalleer.sh" in mac_uninstall_command
+    # macOS deinstall command
+    assert "deinstalleer.py" in mac_uninstall_command
+    assert "HENK_SKIP_INTERNAL_PAUSE=1" in mac_uninstall_command
     assert "rm -rf" not in mac_uninstall_command
+    # Desktop entries
     assert "/home/user" not in desktop_entry
     assert "/home/user" not in uninstall_desktop_entry
-
-
-def test_deinstaller_mentions_mac_clickable_installer():
-    repo_dir = Path(__file__).resolve().parents[1]
-    deinstaller = (repo_dir / "deinstalleer.sh").read_text(encoding="utf-8")
-
-    assert "Henk Installeren.command" in deinstaller
-
-
-def test_deinstaller_handles_missing_python_and_pip_gracefully():
-    repo_dir = Path(__file__).resolve().parents[1]
-    deinstaller = (repo_dir / "deinstalleer.sh").read_text(encoding="utf-8")
-
-    assert "python3.14 python3.13 python3.12 python3.11 python3 python" in deinstaller
-    assert "pip3 pip" in deinstaller
-    assert "Henk pakket was al niet geïnstalleerd of pip ontbreekt. OK" in deinstaller
-    assert "Geen los uitvoerbaar bestand gevonden. OK" in deinstaller
+    # Windows .bat launchers
+    assert "install.py" in win_install_bat
+    assert "deinstalleer.py" in win_deinstall_bat
+    assert len(win_install_bat.splitlines()) < 10
+    assert len(win_deinstall_bat.splitlines()) < 10
