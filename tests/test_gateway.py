@@ -1,8 +1,11 @@
 """Tests voor de Gateway."""
 
+import asyncio
 import json
 
 import pytest
+
+from unittest.mock import AsyncMock, MagicMock
 
 from henk.tools.base import ToolResult
 from henk.gateway import Gateway, KillSwitchActive, RunStatus
@@ -44,7 +47,7 @@ def test_gateway_blocks_on_hard_stop(config, mock_brain):
     gateway = Gateway(config, mock_brain, transcript)
 
     with pytest.raises(KillSwitchActive) as exc_info:
-        gateway.process("hallo")
+        asyncio.run(gateway.process("hallo"))
     assert exc_info.value.switch_type == "hard_stop"
 
 
@@ -56,7 +59,7 @@ def test_gateway_blocks_on_graceful_stop(config, mock_brain):
     gateway = Gateway(config, mock_brain, transcript)
 
     with pytest.raises(KillSwitchActive) as exc_info:
-        gateway.process("hallo")
+        asyncio.run(gateway.process("hallo"))
     assert exc_info.value.switch_type == "graceful_stop"
 
 
@@ -65,7 +68,8 @@ def test_gateway_passes_message_to_brain_without_react_loop(config, mock_brain):
     transcript = TranscriptWriter(config.logs_dir)
     gateway = Gateway(config, mock_brain, transcript)
 
-    response = gateway.process("test bericht")
+    mock_brain.think = AsyncMock(return_value="Test antwoord van Henk.")
+    response = asyncio.run(gateway.process("test bericht"))
     assert response == "Test antwoord van Henk."
     mock_brain.think.assert_called_once_with("test bericht")
 
@@ -74,11 +78,11 @@ def test_gateway_uses_react_loop_when_set(config, mock_brain):
     """Gateway routeert berichten via ReactLoop als die gekoppeld is."""
     transcript = TranscriptWriter(config.logs_dir)
     gateway = Gateway(config, mock_brain, transcript)
-    react_loop = mock_brain
-    react_loop.run.return_value = "Via loop"
+    react_loop = MagicMock()
+    react_loop.run = AsyncMock(return_value="Via loop")
 
     gateway.set_react_loop(react_loop)
-    response = gateway.process("test bericht")
+    response = asyncio.run(gateway.process("test bericht"))
 
     assert response == "Via loop"
     react_loop.run.assert_called_once_with("test bericht", on_status=None)
@@ -89,7 +93,7 @@ def test_gateway_ignores_empty_input(config, mock_brain):
     transcript = TranscriptWriter(config.logs_dir)
     gateway = Gateway(config, mock_brain, transcript)
 
-    response = gateway.process("")
+    response = asyncio.run(gateway.process(""))
     assert response == ""
     mock_brain.think.assert_not_called()
 
@@ -99,7 +103,8 @@ def test_gateway_logs_messages(config, mock_brain):
     transcript = TranscriptWriter(config.logs_dir)
     gateway = Gateway(config, mock_brain, transcript)
 
-    gateway.process("hallo Henk")
+    mock_brain.think = AsyncMock(return_value="Test antwoord van Henk.")
+    asyncio.run(gateway.process("hallo Henk"))
 
     # Controleer dat het transcript bestand bestaat en inhoud heeft
     assert transcript.file_path.exists()

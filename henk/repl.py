@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 from prompt_toolkit import PromptSession
@@ -155,16 +156,264 @@ def _build_key_bindings() -> tuple[KeyBindings, bool]:
     return bindings, shift_enter_supported
 
 
-def start_repl(config: Config, console: Console) -> None:
+async def _conversation_loop(
+    brain,
+    gateway,
+    task_queue: asyncio.Queue,
+    result_queue: asyncio.Queue,
+    config,
+    console: Console,
+    session,
+    task_display,
+    skill_selector,
+    staging,
+    command_context: dict,
+) -> None:
+    from henk.commands import dispatch_command
+    from henk.dispatcher import CancelMessage, ProgressMessage, ResultMessage, TaskMessage
+    from henk.gateway import KillSwitchActive
+    from henk.memory import ChangeType, Provenance, StagedChange
+    from henk.output import print_henk
+    from henk.router import ProviderSelectionError
+    from henk.router.providers.base import ProviderRequestError
+
+    # active_tasks: dict van task_id -> Requirements (voor routing)
+    active_tasks: dict[str, object] = {}
+
+    while True:
+        # Verwerk berichten uit result_queue (non-blocking)
+        while True:
+            try:
+                msg = result_queue.get_nowait()
+                if isinstance(msg, ResultMessage):
+                    if msg.success:
+                        print_henk(console, msg.response, gateway)
+                    else:
+                        console.print(f"[red]{msg.error}[/red]")
+                    task_display.print_static_panel()
+                    # Verwijder uit active_tasks
+                    active_tasks.pop(msg.run_id, None)
+                elif isinstance(msg, ProgressMessage):
+                    task_display.update(msg.status)
+            except asyncio.QueueEmpty:
+                break
+
+        # Wacht op gebruikersinput
+        try:
+            user_input = await asyncio.to_thread(
+                session.prompt,
+                HTML("<prompt>❯ </prompt>"),
+                completer=_build_completer(),
+            )
+        except EOFError:
+            break
+        except KeyboardInterrupt:
+            continue
+
+        stripped = user_input.strip()
+        if not stripped:
+            continue
+
+        if stripped.startswith("/"):
+            result = dispatch_command(stripped, config, console, **command_context)
+            if result == "exit":
+                break
+            continue
+
+        try:
+            # Bouw lijst van actieve taken voor routing
+            active_task_summaries = [
+                (req.task_id, req.summary)
+                for req in active_tasks.values()
+            ]
+
+            route_type, route_task_id = await brain.classify_and_route(stripped, active_task_summaries)
+
+            if route_type == "gesprek":
+                response = await brain.think(stripped)
+                if response:
+                    print_henk(console, response, gateway)
+
+            elif route_type == "update_taak" and route_task_id and route_task_id in active_tasks:
+                req = active_tasks[route_task_id]
+                async with req.update_lock:
+                    await brain.req_merge(req, stripped)
+                console.print("[dim]Wordt meegenomen.[/dim]")
+
+            else:
+                # nieuwe_taak
+                req = await brain.req_build(stripped)
+
+                if skill_selector:
+                    skill = skill_selector.select(req.task_description)
+                    if skill:
+                        req.skill_name = skill.name
+
+                # Verfijningslus
+                question = await brain.req_check(req)
+                while question:
+                    print_henk(console, question, gateway)
+                    try:
+                        follow_up = await asyncio.to_thread(
+                            session.prompt,
+                            HTML("<prompt>❯ </prompt>"),
+                            completer=_build_completer(),
+                        )
+                    except (EOFError, KeyboardInterrupt):
+                        break
+                    follow_up = follow_up.strip()
+                    if follow_up:
+                        await brain.req_merge(req, follow_up)
+                        req.pending_update = False  # reset, was net gebouwd
+                    question = await brain.req_check(req)
+
+                req.confirm()
+
+                run_id = req.task_id
+                active_tasks[run_id] = req
+
+                await task_queue.put(TaskMessage(run_id=run_id, requirements=req))
+
+        except KillSwitchActive as error:
+            console.print(f"[red]Henk is gestopt ({error.switch_type}). Typ /resume om te hervatten.[/red]")
+        except (ProviderSelectionError, ProviderRequestError) as error:
+            console.print(f"[red]{_message_for_model_error(error)}[/red]\n")
+        except Exception:
+            console.print("[red]Ik kan even niet bij mijn brein. Check je API key of internetverbinding.[/red]\n")
+
+    # Sessie-samenvatting bij afsluiten
+    if brain.has_history:
+        summary = await brain.summarize_session()
+        if summary:
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            staging.stage_change(
+                StagedChange(
+                    id="",
+                    change_type=ChangeType.CREATE,
+                    target_item_id=None,
+                    proposed_content=summary,
+                    proposed_description="Korte samenvatting van een recente chatsessie.",
+                    provenance=Provenance.AGENT_SUGGESTED,
+                    reason="Automatische sessiesamenvatting bij afsluiten van henk.",
+                    timestamp=datetime.now(timezone.utc),
+                    proposed_title=f"Sessie {today}",
+                    target_path=f"episodes/{today}.md",
+                )
+            )
+            console.print("[dim]Sessie-samenvatting in staging gezet.[/dim]")
+
+
+async def _work_loop(
+    brain,
+    gateway,
+    react_loop,
+    skill_runner,
+    skill_selector,
+    task_queue: asyncio.Queue,
+    result_queue: asyncio.Queue,
+    task_display,
+    transcript,
+) -> None:
+    from henk.dispatcher import CancelMessage, ProgressMessage, ResultMessage, TaskMessage
+    from henk.gateway import KillSwitchActive
+
+    while True:
+        message = await task_queue.get()
+
+        if isinstance(message, CancelMessage):
+            gateway.cancel_run(message.run_id)
+            task_queue.task_done()
+            continue
+
+        if not isinstance(message, TaskMessage):
+            task_queue.task_done()
+            continue
+
+        req = message.requirements
+        run_id = message.run_id  # task_id, used for queue tracking
+
+        # Start de run
+        gw_run_id = gateway.start_run(req.task_description)
+        gateway.active_requirements[req.task_id] = req
+
+        await result_queue.put(ProgressMessage(run_id=run_id, status="Henk denkt..."))
+
+        req.start_execution()
+        transcript.write("user", req.task_description)
+
+        response = ""
+        success = True
+        error_msg = None
+
+        def _on_status(s: str) -> None:
+            try:
+                result_queue.put_nowait(ProgressMessage(run_id=run_id, status=s))
+            except asyncio.QueueFull:
+                pass
+
+        try:
+            if req.skill_name and skill_selector:
+                skill = skill_selector.select(req.task_description)
+                if skill:
+                    response = await skill_runner.run(
+                        skill,
+                        req,
+                        on_status=_on_status,
+                    )
+                else:
+                    response = await react_loop.run(
+                        req.task_description,
+                        on_status=_on_status,
+                        requirements=req,
+                    )
+            else:
+                task_msg = req.task_description
+                if req.specifications:
+                    task_msg += "\n\nEisen:\n" + req.specifications
+                response = await react_loop.run(
+                    task_msg,
+                    on_status=_on_status,
+                    requirements=req,
+                )
+
+            final = await brain.req_final_check(req, response)
+            if final:
+                response = f"{response}\n\n{final}"
+
+            req.complete(response)
+            gateway.complete_run(gw_run_id)
+            transcript.write("assistant", response)
+
+        except KillSwitchActive as e:
+            gateway.fail_run(gw_run_id)
+            req.fail(str(e))
+            success = False
+            error_msg = f"Henk is gestopt ({e.switch_type}). Typ /resume om te hervatten."
+        except Exception as e:
+            gateway.fail_run(gw_run_id)
+            req.fail(str(e))
+            success = False
+            error_msg = "Ik kan even niet bij mijn brein. Check je API key of internetverbinding."
+        finally:
+            gateway.active_requirements.pop(req.task_id, None)
+
+        await result_queue.put(ResultMessage(
+            run_id=run_id,
+            response=response,
+            success=success,
+            error=error_msg,
+        ))
+        task_queue.task_done()
+
+
+async def start_repl(config: Config, console: Console) -> None:
     from henk.brain import Brain
     from henk.commands import dispatch_command
     from henk.gateway import Gateway, KillSwitchActive
     from henk.heartbeat import Heartbeat, ReminderTool
-    from henk.memory import ChangeType, Provenance, StagedChange
     from henk.model_gateway import ModelGateway
     from henk.output import print_henk
     from henk.react_loop import ReactLoop
-    from henk.requirements import Requirements, RequirementsStatus
     from henk.router import ModelRouter, ProviderSelectionError
     from henk.router.providers.base import ProviderRequestError
     from henk.security.proxy import SecurityProxy
@@ -253,111 +502,46 @@ def start_repl(config: Config, console: Console) -> None:
         "shift_enter_supported": shift_enter_supported,
     }
 
+    task_queue: asyncio.Queue = asyncio.Queue()
+    result_queue: asyncio.Queue = asyncio.Queue()
+
+    task_display.open_session()
+    work_task = asyncio.create_task(
+        _work_loop(
+            brain=brain,
+            gateway=gateway,
+            react_loop=react_loop,
+            skill_runner=skill_runner,
+            skill_selector=skill_selector,
+            task_queue=task_queue,
+            result_queue=result_queue,
+            task_display=task_display,
+            transcript=transcript,
+        )
+    )
     try:
-        while True:
-            try:
-                user_input = session.prompt(HTML("<prompt>❯ </prompt>"), completer=_build_completer())
-            except EOFError:
-                break
-            except KeyboardInterrupt:
-                continue
-
-            stripped = user_input.strip()
-            if not stripped:
-                continue
-
-            if stripped.startswith("/"):
-                result = dispatch_command(stripped, config, console, **command_context)
-                if result == "exit":
-                    break
-                continue
-
-            try:
-                if brain.active_requirements and brain.active_requirements.status == RequirementsStatus.CONFIRMED:
-                    requirements = brain.active_requirements
-                    requirements.start_execution()
-                    run_id = gateway.start_run(requirements.task_description)
-                    try:
-                        if requirements.skill_name and skill_selector:
-                            skill = skill_selector.select(requirements.task_description)
-                            if skill:
-                                task_display.start("Henk denkt...")
-                                response = skill_runner.run(skill, requirements, on_status=task_display.update)
-                                task_display.stop()
-                            else:
-                                task_display.start("Henk denkt...")
-                                response = react_loop.run(requirements.task_description, on_status=task_display.update)
-                                task_display.stop()
-                        else:
-                            task_display.start("Henk denkt...")
-                            response = react_loop.run(
-                                requirements.task_description + "\n\nEisen:\n" + requirements.specifications,
-                                on_status=task_display.update,
-                            )
-                            task_display.stop()
-                        gateway.complete_run(run_id)
-                    except Exception:
-                        gateway.fail_run(run_id)
-                        raise
-                    requirements.complete(response)
-                    brain.active_requirements = None
-                elif brain.active_requirements:
-                    task_display.start("Henk denkt...")
-                    response = brain.refine_requirements(stripped, brain.active_requirements)
-                    task_display.stop()
-                else:
-                    task_display.start("Henk denkt...")
-                    kind = brain.classify_input(stripped)
-                    if kind == "taak":
-                        req = Requirements(task_description=stripped)
-                        if skill_selector:
-                            skill = skill_selector.select(stripped)
-                            if skill:
-                                req.skill_name = skill.name
-                        brain.active_requirements = req
-                        response = brain.refine_requirements(stripped, req)
-                    else:
-                        response = gateway.process(stripped, on_status=task_display.update)
-                    task_display.stop()
-
-                if response:
-                    print_henk(console, response, gateway)
-                    task_display.print_static_panel()
-            except KillSwitchActive as error:
-                task_display.stop()
-                gateway.fail_run()
-                console.print(f"[red]Henk is gestopt ({error.switch_type}). Typ /resume om te hervatten.[/red]")
-            except (ProviderSelectionError, ProviderRequestError) as error:
-                task_display.stop()
-                gateway.fail_run()
-                console.print(f"[red]{_message_for_model_error(error)}[/red]\n")
-            except Exception:
-                task_display.stop()
-                gateway.fail_run()
-                console.print("[red]Ik kan even niet bij mijn brein. Check je API key of internetverbinding.[/red]\n")
+        await _conversation_loop(
+            brain=brain,
+            gateway=gateway,
+            task_queue=task_queue,
+            result_queue=result_queue,
+            config=config,
+            console=console,
+            session=session,
+            task_display=task_display,
+            skill_selector=skill_selector,
+            staging=staging,
+            command_context=command_context,
+        )
     except KeyboardInterrupt:
         pass
     finally:
+        work_task.cancel()
+        try:
+            await work_task
+        except asyncio.CancelledError:
+            pass
         heartbeat.stop()
-
-    if brain.has_history:
-        summary = brain.summarize_session()
-        if summary:
-            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            staging.stage_change(
-                StagedChange(
-                    id="",
-                    change_type=ChangeType.CREATE,
-                    target_item_id=None,
-                    proposed_content=summary,
-                    proposed_description="Korte samenvatting van een recente chatsessie.",
-                    provenance=Provenance.AGENT_SUGGESTED,
-                    reason="Automatische sessiesamenvatting bij afsluiten van henk.",
-                    timestamp=datetime.now(timezone.utc),
-                    proposed_title=f"Sessie {today}",
-                    target_path=f"episodes/{today}.md",
-                )
-            )
-            console.print("[dim]Sessie-samenvatting in staging gezet.[/dim]")
+        task_display.close_session()
 
     console.print(f"\nTranscript bewaard in {transcript.file_path}")

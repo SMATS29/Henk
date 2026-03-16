@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from pathlib import Path
 
@@ -75,7 +76,7 @@ def main(ctx: typer.Context):
     config = load_config(data_dir)
     from henk.repl import start_repl
 
-    start_repl(config, console)
+    asyncio.run(start_repl(config, console))
 
 
 @app.command()
@@ -139,7 +140,7 @@ def chat():
     config = load_config(data_dir)
     from henk.repl import start_repl
 
-    start_repl(config, console)
+    asyncio.run(start_repl(config, console))
 
 
 if __name__ == "__main__":

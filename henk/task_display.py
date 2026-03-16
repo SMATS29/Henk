@@ -85,7 +85,7 @@ class TaskDisplay:
         self._status_message: str = ""
 
     def _render(self) -> Table:
-        """Render het volledige display: spinner + taakpaneel + statusbalk."""
+        """Render het volledige display: taakpaneel + statusbalk."""
         outer = Table(show_header=False, show_edge=False, box=None, expand=True, pad_edge=False)
         outer.add_column(ratio=1)
 
@@ -100,8 +100,28 @@ class TaskDisplay:
 
         return outer
 
+    def open_session(self) -> None:
+        """Start de persistent Live context voor de hele REPL-sessie."""
+        if self._live is not None:
+            return
+        self._live = Live(
+            self._render(),
+            console=self._console,
+            refresh_per_second=1,
+            transient=False,
+            vertical_overflow="visible",
+        )
+        self._live.start()
+
+    def close_session(self) -> None:
+        """Stop de persistent Live context bij afsluiten van de REPL."""
+        if self._live is not None:
+            self._live.stop()
+            self._live = None
+        self._status_message = ""
+
     def start(self, message: str = "Henk denkt...") -> None:
-        """Start het live display."""
+        """Start het live display (backwards-compatible)."""
         self._status_message = message
         if self._live is not None:
             self._live.update(self._render())
@@ -120,8 +140,12 @@ class TaskDisplay:
         if self._live is not None:
             self._live.update(self._render())
 
+    def update_task(self, message: str) -> None:
+        """Update het taakpaneel."""
+        self.update(message)
+
     def stop(self) -> None:
-        """Stop het live display."""
+        """Stop het live display (backwards-compatible, sluit geen sessie)."""
         if self._live is not None:
             self._live.stop()
             self._live = None

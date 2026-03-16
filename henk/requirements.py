@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -22,6 +24,10 @@ class Requirements:
     confirmed_at: datetime | None = None
     completed_at: datetime | None = None
     result: str | None = None
+    task_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+    summary: str = ""
+    pending_update: bool = False
+    update_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def add_specification(self, spec: str) -> None:
         if self.status not in (RequirementsStatus.DRAFT, RequirementsStatus.CONFIRMED):

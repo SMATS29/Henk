@@ -1,7 +1,10 @@
 """Tests voor de Brain."""
 
+import asyncio
 from copy import deepcopy
 from unittest.mock import MagicMock
+
+import pytest
 
 from henk.brain import Brain, SYSTEM_PROMPT
 from henk.config import Config, DEFAULT_CONFIG
@@ -64,7 +67,7 @@ def _make_config() -> Config:
 def test_brain_skips_identity_prompt_when_disabled():
     provider = DummyProvider([ProviderResponse(text="Hoi!", tool_calls=None, raw=None)])
     brain = Brain(_make_config(), model_gateway=DummyModelGateway(provider))
-    brain.think("hallo")
+    asyncio.run(brain.think("hallo"))
     assert provider.calls[0]["system"] == ""
 
 
@@ -73,7 +76,7 @@ def test_brain_uses_system_prompt_when_enabled():
     config = _make_config()
     config.raw["henk"]["identity_prompt_enabled"] = True
     brain = Brain(config, model_gateway=DummyModelGateway(provider))
-    brain.think("hallo")
+    asyncio.run(brain.think("hallo"))
     assert provider.calls[0]["system"] == SYSTEM_PROMPT
 
 
@@ -83,8 +86,8 @@ def test_brain_builds_message_history():
         ProviderResponse(text="Antwoord 2", tool_calls=None, raw=None),
     ])
     brain = Brain(_make_config(), model_gateway=DummyModelGateway(provider))
-    brain.think("bericht 1")
-    brain.think("bericht 2")
+    asyncio.run(brain.think("bericht 1"))
+    asyncio.run(brain.think("bericht 2"))
 
     assert provider.calls[1]["messages"] == [
         {"role": "user", "content": "bericht 1"},
@@ -99,7 +102,7 @@ def test_brain_appends_memory_context_to_system_prompt():
     retrieval.get_context.return_value = "Project Henk"
 
     brain = Brain(_make_config(), model_gateway=DummyModelGateway(provider), memory_retrieval=retrieval)
-    brain.think("status?")
+    asyncio.run(brain.think("status?"))
 
     system_prompt = provider.calls[0]["system"]
     assert system_prompt == "## Geheugen\nProject Henk"
@@ -113,7 +116,7 @@ def test_brain_appends_memory_context_to_system_prompt_with_identity_when_enable
     config.raw["henk"]["identity_prompt_enabled"] = True
 
     brain = Brain(config, model_gateway=DummyModelGateway(provider), memory_retrieval=retrieval)
-    brain.think("status?")
+    asyncio.run(brain.think("status?"))
 
     system_prompt = provider.calls[0]["system"]
     assert SYSTEM_PROMPT in system_prompt
@@ -132,7 +135,7 @@ def test_run_with_tools_keeps_history_and_returns_final_answer():
         assert params == {"query": "test"}
         return ToolResult(success=True, data="zoekresultaat", source_tag="")
 
-    out = brain.run_with_tools("zoek iets", executor)
+    out = asyncio.run(brain.run_with_tools("zoek iets", executor))
     assert out == "Klaar"
     assert brain._history == [
         {"role": "user", "content": "zoek iets"},
@@ -146,8 +149,8 @@ def test_summarize_session_uses_history():
         ProviderResponse(text="Samenvatting", tool_calls=None, raw=None),
     ])
     brain = Brain(_make_config(), model_gateway=DummyModelGateway(provider))
-    brain.think("wat deden we?")
-    summary = brain.summarize_session()
+    asyncio.run(brain.think("wat deden we?"))
+    summary = asyncio.run(brain.summarize_session())
 
     assert summary == "Samenvatting"
     prompt = provider.calls[1]["messages"][0]["content"]
@@ -164,8 +167,8 @@ def test_brain_tracks_tokens_from_provider_responses():
     )
     gateway = DummyModelGateway(provider)
     brain = Brain(_make_config(), model_gateway=gateway)
-    brain.think("eerste")
-    brain.think("tweede")
+    asyncio.run(brain.think("eerste"))
+    asyncio.run(brain.think("tweede"))
 
     assert brain.token_tracker.total_input == 14
     assert brain.token_tracker.total_output == 8
@@ -186,7 +189,7 @@ def test_brain_routes_all_llm_calls_via_model_gateway():
     assert brain.classify_input("hoi") == "gesprek"
     brain.refine_requirements("maak een plan", requirements)
     brain._history = [{"role": "user", "content": "x"}, {"role": "assistant", "content": "y"}]
-    brain.summarize_session()
+    asyncio.run(brain.summarize_session())
 
     assert [call["purpose"] for call in gateway.calls] == [
         "classify_input",

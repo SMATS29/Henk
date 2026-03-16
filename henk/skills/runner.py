@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -15,7 +16,7 @@ class SkillRunner:
         self._gateway = gateway
         self._react_loop = react_loop
 
-    def run(self, skill: Skill, requirements: Requirements, on_status: Callable[[str], None] | None = None) -> str:
+    async def run(self, skill: Skill, requirements: Requirements, on_status: Callable[[str], None] | None = None) -> str:
         skill_run = SkillRun(skill=skill, started_at=datetime.now(timezone.utc))
         results: list[str] = []
 
@@ -28,7 +29,7 @@ class SkillRunner:
 
             try:
                 step_prompt = self._build_step_prompt(step, requirements, results)
-                result = self._react_loop.run(step_prompt, on_status=on_status)
+                result = await self._react_loop.run(step_prompt, on_status=on_status)
 
                 step.status = StepStatus.COMPLETED
                 step.result = result

@@ -5,15 +5,18 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from henk.brain import Brain
 from henk.config import Config
 from henk.tools.base import ErrorType, ToolResult
 from henk.transcript import TranscriptWriter
+
+if TYPE_CHECKING:
+    from henk.requirements import Requirements
 
 
 class KillSwitchActive(Exception):
@@ -91,6 +94,7 @@ class Gateway:
         self._runs: dict[str, RunState] = {}
         self._session_tokens_input: int = 0
         self._session_tokens_output: int = 0
+        self.active_requirements: dict[str, Requirements] = {}
 
     @property
     def tool_call_count(self) -> int:
@@ -260,7 +264,20 @@ class Gateway:
     def session_tokens_total(self) -> int:
         return self._session_tokens_input + self._session_tokens_output
 
-    def process(self, user_message: str, on_status: Callable[[str], None] | None = None) -> str:
+    def cancel_run(self, run_id: str) -> None:
+        """Annuleer een run: zet status op FAILED en log het event."""
+        if run_id in self._runs:
+            self._runs[run_id].status = RunStatus.FAILED
+            self._runs[run_id].ended_at = datetime.now()
+        self._transcript.log_event(
+            {
+                "type": "run.cancelled",
+                "session_id": self._transcript.session_id,
+                "run_id": run_id,
+            }
+        )
+
+    async def process(self, user_message: str, on_status: Callable[[str], None] | None = None) -> str:
         """Verwerk een gebruikersbericht via de ReAct-loop."""
         active_switch = self.check_kill_switches()
         if active_switch:
@@ -273,9 +290,9 @@ class Gateway:
         self._transcript.write("user", user_message)
         try:
             if self._react_loop is None:
-                response = self._brain.think(user_message)
+                response = await self._brain.think(user_message)
             else:
-                response = self._react_loop.run(user_message, on_status=on_status)
+                response = await self._react_loop.run(user_message, on_status=on_status)
             self.complete_run(run_id)
         except Exception:
             self.fail_run(run_id)
