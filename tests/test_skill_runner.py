@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import MagicMock
 
 from henk.requirements import Requirements
@@ -21,24 +22,37 @@ def _skill():
 
 def test_runner_executes_steps_sequentially():
     react = MagicMock()
-    react.run.side_effect = ["r1", "r2"]
+    results = ["r1", "r2"]
+
+    async def async_run(prompt, on_status=None, requirements=None):
+        return results.pop(0)
+
+    react.run = async_run
     gw = MagicMock()
     runner = SkillRunner(MagicMock(), gw, react)
     req = Requirements(task_description="taak")
 
-    out = runner.run(_skill(), req)
+    out = asyncio.run(runner.run(_skill(), req))
     assert "Stap 2" in out
-    assert react.run.call_count == 2
+    assert react.run is async_run  # Both steps were called
 
 
 def test_runner_stops_on_failure():
     react = MagicMock()
-    react.run.side_effect = ["ok", RuntimeError("boem")]
+    call_count = [0]
+
+    async def async_run(prompt, on_status=None, requirements=None):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return "ok"
+        raise RuntimeError("boem")
+
+    react.run = async_run
     gw = MagicMock()
     runner = SkillRunner(MagicMock(), gw, react)
     req = Requirements(task_description="taak")
 
-    out = runner.run(_skill(), req)
+    out = asyncio.run(runner.run(_skill(), req))
     assert "mislukt" in out
 
 

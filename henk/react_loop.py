@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Callable
 
 from henk.gateway import Gateway, LoopDecision
+from henk.requirements import Requirements
 from henk.tools.base import BaseTool, ErrorType, ToolError, ToolResult
 
 
@@ -26,7 +28,12 @@ class ReactLoop:
             return "file_manager", {"action": "list", **mapped_params}
         return tool_name, mapped_params
 
-    def run(self, user_message: str, on_status: Callable[[str], None] | None = None) -> str:
+    async def run(
+        self,
+        user_message: str,
+        on_status: Callable[[str], None] | None = None,
+        requirements: Requirements | None = None,
+    ) -> str:
         """Voer een volledige ReAct-cyclus uit voor een gebruikersbericht."""
         self._gateway.reset_loop_counters()
 
@@ -72,7 +79,7 @@ class ReactLoop:
                 on_status("Henk denkt...")
             return result
 
-        return self._brain.run_with_tools(user_message, execute_tool)
+        return await self._brain.run_with_tools(user_message, execute_tool, requirements=requirements)
 
     def _tool_detail(self, tool_name: str, params: dict[str, Any]) -> str:
         if tool_name == "web_search":

@@ -1,6 +1,7 @@
 """Tests voor ReAct-loop gedrag."""
 
-from unittest.mock import MagicMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
 from henk.config import Config, DEFAULT_CONFIG
 from henk.gateway import Gateway
@@ -40,25 +41,29 @@ def test_loop_runs_brain_with_tool_executor(tmp_path):
     tool = DummyTool(ToolResult(True, "ok", "[TOOL:x]"))
     brain = MagicMock()
 
-    def run_with_tools(user_message, executor):
+    async def run_with_tools(user_message, executor, tools=None, requirements=None):
         result = executor("x", {})
         assert result.success is True
         return "Antwoord"
 
-    brain.run_with_tools.side_effect = run_with_tools
+    brain.run_with_tools = run_with_tools
     loop = ReactLoop(brain, gw, {"x": tool})
-    out = loop.run("hallo")
+    out = asyncio.run(loop.run("hallo"))
     assert out == "Antwoord"
 
 
 def test_map_file_manager_tools(tmp_path):
     gw = _make_gateway(tmp_path)
     brain = MagicMock()
-    brain.run_with_tools.side_effect = lambda message, exec_tool: exec_tool("file_manager_read", {"path": "a"}).data
+
+    async def run_with_tools(user_message, executor, tools=None, requirements=None):
+        return executor("file_manager_read", {"path": "a"}).data
+
+    brain.run_with_tools = run_with_tools
     tool = DummyTool(ToolResult(True, "gelezen", ""))
     loop = ReactLoop(brain, gw, {"file_manager": tool})
 
-    out = loop.run("hallo")
+    out = asyncio.run(loop.run("hallo"))
     assert out == "gelezen"
 
 
@@ -66,13 +71,13 @@ def test_unknown_tool_returns_error(tmp_path):
     gw = _make_gateway(tmp_path)
     brain = MagicMock()
 
-    def run_with_tools(user_message, executor):
+    async def run_with_tools(user_message, executor, tools=None, requirements=None):
         result = executor("onbekend", {})
         return result.error.message
 
-    brain.run_with_tools.side_effect = run_with_tools
+    brain.run_with_tools = run_with_tools
     loop = ReactLoop(brain, gw, {})
-    out = loop.run("hallo")
+    out = asyncio.run(loop.run("hallo"))
     assert "Onbekende tool" in out
 
 
@@ -80,13 +85,13 @@ def test_denied_limit_returns_error_result(tmp_path):
     gw = _make_gateway(tmp_path, max_calls=0)
     brain = MagicMock()
 
-    def run_with_tools(user_message, executor):
+    async def run_with_tools(user_message, executor, tools=None, requirements=None):
         result = executor("x", {})
         return result.error.message
 
-    brain.run_with_tools.side_effect = run_with_tools
+    brain.run_with_tools = run_with_tools
     loop = ReactLoop(brain, gw, {"x": DummyTool(ToolResult(True, "ok", ""))})
-    out = loop.run("hallo")
+    out = asyncio.run(loop.run("hallo"))
     assert "tool-limiet" in out
 
 
@@ -94,14 +99,14 @@ def test_denied_identical_returns_error_result(tmp_path):
     gw = _make_gateway(tmp_path, max_calls=4)
     brain = MagicMock()
 
-    def run_with_tools(user_message, executor):
+    async def run_with_tools(user_message, executor, tools=None, requirements=None):
         executor("x", {})
         result = executor("x", {})
         return result.error.message
 
-    brain.run_with_tools.side_effect = run_with_tools
+    brain.run_with_tools = run_with_tools
     loop = ReactLoop(brain, gw, {"x": DummyTool(ToolResult(True, "ok", ""))})
-    out = loop.run("hallo")
+    out = asyncio.run(loop.run("hallo"))
     assert "identieke" in out
 
 
@@ -110,14 +115,14 @@ def test_registers_tool_errors(tmp_path):
     brain = MagicMock()
     err = ToolResult(False, None, "", ToolError(ErrorType.TECHNICAL, "fout", False))
 
-    def run_with_tools(user_message, executor):
+    async def run_with_tools(user_message, executor, tools=None, requirements=None):
         result = executor("x", {})
         assert result.error.error_type == ErrorType.TECHNICAL
         return "klaar"
 
-    brain.run_with_tools.side_effect = run_with_tools
+    brain.run_with_tools = run_with_tools
     loop = ReactLoop(brain, gw, {"x": DummyTool(err)})
-    out = loop.run("hallo")
+    out = asyncio.run(loop.run("hallo"))
     assert out == "klaar"
     assert gw.technical_retry_count == 1
 
@@ -126,16 +131,16 @@ def test_updates_status_during_tool_calls(tmp_path):
     gw = _make_gateway(tmp_path)
     brain = MagicMock()
 
-    def run_with_tools(user_message, executor):
+    async def run_with_tools(user_message, executor, tools=None, requirements=None):
         result = executor("web_search", {"query": "amsterdam"})
         assert result.success is True
         return "klaar"
 
-    brain.run_with_tools.side_effect = run_with_tools
+    brain.run_with_tools = run_with_tools
     loop = ReactLoop(brain, gw, {"web_search": DummyTool(ToolResult(True, "ok", ""))})
 
     updates: list[str] = []
-    out = loop.run("hallo", on_status=updates.append)
+    out = asyncio.run(loop.run("hallo", on_status=updates.append))
     assert out == "klaar"
     assert updates[0].startswith("web_search: amsterdam")
     assert updates[-1] == "Henk denkt..."

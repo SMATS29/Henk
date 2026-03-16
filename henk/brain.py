@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import Any
 
 from henk.config import Config
 from henk.memory.retrieval import MemoryRetrieval
 from henk.model_gateway import ModelGateway
-from henk.requirements import Requirements
+from henk.requirements import Requirements, RequirementsStatus
 from henk.router import ModelRole, ModelRouter
 from henk.skills.selector import SkillSelector
 
@@ -80,10 +82,11 @@ class Brain:
     def has_history(self) -> bool:
         return bool(self._history)
 
-    def think(self, user_message: str, *, include_in_history: bool = True) -> str:
+    async def think(self, user_message: str, *, include_in_history: bool = True) -> str:
         messages = self._history.copy()
         messages.append({"role": "user", "content": user_message})
-        result = self._model_gateway.chat(
+        result = await asyncio.to_thread(
+            self._model_gateway.chat,
             role=ModelRole.DEFAULT,
             messages=messages,
             system=self._build_system_prompt(user_message),
@@ -99,7 +102,7 @@ class Brain:
         return answer
 
     def classify_input(self, user_message: str) -> str:
-        """Classificeer input als taak of gesprek."""
+        """Classificeer input als taak of gesprek. (vervalt — gebruik classify_and_route)"""
         response = self._model_gateway.chat(
             role=ModelRole.FAST,
             messages=[
@@ -117,7 +120,7 @@ class Brain:
         return "taak" if "taak" in (response.text or "").strip().lower() else "gesprek"
 
     def refine_requirements(self, user_input: str, requirements: Requirements) -> str:
-        """Verfijn eisen via gesprek."""
+        """Verfijn eisen via gesprek. (vervalt — gebruik req_build en req_check)"""
         system = self._build_system_prompt(user_input)
         prompt = (
             f"De gebruiker wil: {requirements.task_description}\n"
@@ -146,7 +149,13 @@ class Brain:
         self._history.append({"role": "assistant", "content": answer})
         return answer
 
-    def run_with_tools(self, user_message: str, tool_executor: Any, tools: list[dict[str, Any]] | None = None) -> str:
+    async def run_with_tools(
+        self,
+        user_message: str,
+        tool_executor: Any,
+        tools: list[dict[str, Any]] | None = None,
+        requirements: Requirements | None = None,
+    ) -> str:
         system = self._build_system_prompt(user_message)
         tool_defs = tools or self._anthropic_tools()
 
@@ -154,7 +163,8 @@ class Brain:
         messages: list[dict[str, Any]] = self._history.copy()
 
         while True:
-            result = self._model_gateway.chat(
+            result = await asyncio.to_thread(
+                self._model_gateway.chat,
                 role=ModelRole.DEFAULT,
                 messages=messages,
                 system=system,
@@ -171,17 +181,29 @@ class Brain:
 
             messages.append(provider.format_assistant_message(response))
             for tool_call in response.tool_calls:
-                result = tool_executor(tool_call.name, tool_call.parameters)
+                tool_result = await asyncio.to_thread(tool_executor, tool_call.name, tool_call.parameters)
                 result_text = (
-                    str(result.data)
-                    if result.data is not None
-                    else str(result.error.message)
-                    if result.error
+                    str(tool_result.data)
+                    if tool_result.data is not None
+                    else str(tool_result.error.message)
+                    if tool_result.error
                     else "Geen resultaat"
                 )
                 messages.append(provider.format_tool_result(tool_call.id, result_text))
 
-    def summarize_session(self) -> str | None:
+            # Checkpoint: check voor pending_update na elke tool-call
+            if requirements is not None:
+                async with requirements.update_lock:
+                    if requirements.pending_update:
+                        requirements.pending_update = False
+                        update_msg = (
+                            "[CONTEXT UPDATE]\n"
+                            "De eisen zijn bijgewerkt door de gebruiker:\n"
+                            f"{requirements.specifications}"
+                        )
+                        messages.append({"role": "user", "content": update_msg})
+
+    async def summarize_session(self) -> str | None:
         if not self._history:
             return None
         transcript = "\n".join(
@@ -192,13 +214,185 @@ class Brain:
             "Noem alleen duurzame of relevante context voor later.\n\n"
             f"{transcript}"
         )
-        response = self._model_gateway.chat(
+        result = await asyncio.to_thread(
+            self._model_gateway.chat,
             role=ModelRole.FAST,
             messages=[{"role": "user", "content": prompt}],
             system=self._build_system_prompt(""),
             purpose="summarize_session",
-        ).response
-        return response.text
+        )
+        return result.response.text
+
+    async def classify_and_route(
+        self,
+        user_input: str,
+        active_tasks: list[tuple[str, str]],
+    ) -> tuple[str, str | None]:
+        """Classificeer input en routeer naar gesprek, nieuwe taak of update van bestaande taak."""
+        task_list = ""
+        if active_tasks:
+            task_list = "\nActieve taken:\n" + "\n".join(
+                f"{i+1}. [{task_id}] {summary}" for i, (task_id, summary) in enumerate(active_tasks)
+            )
+
+        user_prompt = (
+            f'Gebruikersinput: "{user_input}"{task_list}\n\n'
+            "Geef JSON terug: "
+            '{"type": "gesprek"|"nieuwe_taak"|"update_taak", "task_id": null|"<id>"}'
+        )
+
+        result = await asyncio.to_thread(
+            self._model_gateway.chat,
+            role=ModelRole.FAST,
+            messages=[{"role": "user", "content": user_prompt}],
+            system=(
+                'Classificeer de gebruikersinput. Geef altijd JSON terug: '
+                '{"type": "gesprek"|"nieuwe_taak"|"update_taak", "task_id": null|"<id>"}'
+            ),
+            purpose="classify_and_route",
+        )
+        text = result.response.text or ""
+        try:
+            # Strip markdown code blocks if present
+            cleaned = text.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("```")[1]
+                if cleaned.startswith("json"):
+                    cleaned = cleaned[4:]
+            data = json.loads(cleaned.strip())
+            route_type = data.get("type", "nieuwe_taak")
+            task_id = data.get("task_id")
+            if route_type not in ("gesprek", "nieuwe_taak", "update_taak"):
+                route_type = "nieuwe_taak"
+            return route_type, task_id
+        except (json.JSONDecodeError, KeyError):
+            return "nieuwe_taak", None
+
+    async def req_build(self, user_input: str) -> Requirements:
+        """Bouw een Requirements object op uit gebruikersinput."""
+        user_prompt = (
+            f'Gebruikersinput: "{user_input}"\n\n'
+            'Geef JSON terug: {"task_description": "...", "summary": "...", "specifications": "..."}'
+        )
+        result = await asyncio.to_thread(
+            self._model_gateway.chat,
+            role=ModelRole.FAST,
+            messages=[{"role": "user", "content": user_prompt}],
+            system=(
+                "Analyseer de gebruikersinput en stel een Requirements object op. "
+                "task_description: de kerntaak in één zin. "
+                "summary: één korte identificeerbare zin voor routing. "
+                "specifications: concrete eisen uit de input. "
+                'Geef JSON terug: {"task_description": "...", "summary": "...", "specifications": "..."}'
+            ),
+            purpose="req_build",
+        )
+        text = result.response.text or ""
+        try:
+            cleaned = text.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("```")[1]
+                if cleaned.startswith("json"):
+                    cleaned = cleaned[4:]
+            data = json.loads(cleaned.strip())
+            req = Requirements(
+                task_description=data.get("task_description", user_input),
+                specifications=data.get("specifications", ""),
+                status=RequirementsStatus.DRAFT,
+            )
+            req.summary = data.get("summary", user_input[:60])
+            return req
+        except (json.JSONDecodeError, KeyError):
+            req = Requirements(task_description=user_input, status=RequirementsStatus.DRAFT)
+            req.summary = user_input[:60]
+            return req
+
+    async def req_check(self, requirements: Requirements) -> str | None:
+        """Check of requirements compleet genoeg zijn. Geeft None als compleet, anders een vraag."""
+        user_prompt = (
+            f"Taak: {requirements.task_description}\n"
+            f"Eisen: {requirements.specifications or '(geen)'}\n\n"
+            'Geef JSON terug: {"complete": true} of {"complete": false, "question": "..."}'
+        )
+        result = await asyncio.to_thread(
+            self._model_gateway.chat,
+            role=ModelRole.FAST,
+            messages=[{"role": "user", "content": user_prompt}],
+            system=(
+                "Beoordeel of de requirements compleet genoeg zijn om de taak uit te voeren. "
+                'Geef JSON terug: {"complete": true} of {"complete": false, "question": "..."}'
+            ),
+            purpose="req_check",
+        )
+        text = result.response.text or ""
+        try:
+            cleaned = text.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("```")[1]
+                if cleaned.startswith("json"):
+                    cleaned = cleaned[4:]
+            data = json.loads(cleaned.strip())
+            if data.get("complete", True):
+                return None
+            return data.get("question")
+        except (json.JSONDecodeError, KeyError):
+            return None
+
+    async def req_merge(self, requirements: Requirements, new_input: str) -> Requirements:
+        """Voeg nieuwe gebruikersinput samen met bestaande requirements."""
+        user_prompt = (
+            f"Huidige taak: {requirements.task_description}\n"
+            f"Huidige eisen: {requirements.specifications or '(geen)'}\n"
+            f"Nieuwe input: {new_input}\n\n"
+            'Geef JSON terug: {"task_description": "...", "summary": "...", "specifications": "..."}'
+        )
+        result = await asyncio.to_thread(
+            self._model_gateway.chat,
+            role=ModelRole.FAST,
+            messages=[{"role": "user", "content": user_prompt}],
+            system=(
+                "Verwerk de nieuwe gebruikersinput in de bestaande requirements. "
+                "Behoud bestaande informatie en voeg nieuwe toe. "
+                'Geef JSON terug: {"task_description": "...", "summary": "...", "specifications": "..."}'
+            ),
+            purpose="req_merge",
+        )
+        text = result.response.text or ""
+        try:
+            cleaned = text.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("```")[1]
+                if cleaned.startswith("json"):
+                    cleaned = cleaned[4:]
+            data = json.loads(cleaned.strip())
+            requirements.task_description = data.get("task_description", requirements.task_description)
+            requirements.summary = data.get("summary", requirements.summary)
+            requirements.specifications = data.get("specifications", requirements.specifications)
+        except (json.JSONDecodeError, KeyError):
+            requirements.add_specification(new_input)
+        requirements.pending_update = True
+        return requirements
+
+    async def req_final_check(self, requirements: Requirements, result: str) -> str:
+        """Vergelijk het resultaat met de requirements en geef een beknopte evaluatie."""
+        user_prompt = (
+            f"Taak: {requirements.task_description}\n"
+            f"Eisen: {requirements.specifications or '(geen)'}\n"
+            f"Resultaat: {result}\n\n"
+            "Geef een beknopte evaluatie: wat is gelukt, wat ontbreekt eventueel."
+        )
+        eval_result = await asyncio.to_thread(
+            self._model_gateway.chat,
+            role=ModelRole.FAST,
+            messages=[{"role": "user", "content": user_prompt}],
+            system=(
+                "Vergelijk het resultaat met de requirements. "
+                "Geef een beknopte evaluatie als vrije tekst: wat is gelukt, wat eventueel ontbreekt. "
+                "Dit is geen nieuwe taakuitvoering — alleen een beoordeling."
+            ),
+            purpose="req_final_check",
+        )
+        return eval_result.response.text or ""
 
     def _build_system_prompt(self, user_message: str) -> str:
         parts: list[str] = []
