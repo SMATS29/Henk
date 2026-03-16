@@ -23,6 +23,23 @@ def test_router_selects_provider_with_fallback_when_unavailable(monkeypatch):
     assert provider.name == "openai"
 
 
+def test_router_returns_available_provider_chain_in_order(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    data = deepcopy(DEFAULT_CONFIG)
+    data["roles"]["default"] = {
+        "primary": "openai/gpt-5.2",
+        "fallback": ["openai/gpt-5-mini"],
+    }
+    router = ModelRouter(Config(data))
+
+    providers = router.get_provider_candidates(ModelRole.DEFAULT)
+
+    assert [router.provider_label(provider) for provider in providers] == [
+        "openai/gpt-5.2",
+        "openai/gpt-5-mini",
+    ]
+
+
 def test_router_selection_error_without_available_provider(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

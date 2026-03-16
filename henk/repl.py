@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from html import escape
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.formatted_text import HTML
@@ -32,12 +34,16 @@ def _message_for_model_error(error: Exception) -> str:
             return "Ik kan deze taak nu niet uitvoeren met de beschikbare modellen."
         return "Ik kan even geen model kiezen. Check je configuratie en verbinding."
     if isinstance(error, ProviderRequestError):
+        if error.reason == "model_unavailable":
+            return "Ik kan dit model nu niet gebruiken. Check de modelnaam of gebruik een fallbackmodel."
         if error.reason == "network_unavailable":
             return "Ik kan het model nu niet bereiken. Check je internet of lokale modelserver."
         if error.reason == "authentication_failed":
             return "Ik kan het model niet gebruiken. Check je API key."
         if error.reason == "missing_credentials":
             return "Ik kan geen model bereiken omdat er geen API key is ingesteld."
+        if error.reason == "dependency_missing":
+            return "Ik kan het model niet gebruiken omdat de benodigde dependency niet is geinstalleerd."
         return "De modelaanroep mislukte. Probeer het zo nog eens."
     return "Ik kan even niet bij mijn brein. Check je API key of internetverbinding."
 
@@ -160,7 +166,6 @@ async def _conversation_loop(
     brain,
     gateway,
     task_queue: asyncio.Queue,
-    result_queue: asyncio.Queue,
     config,
     console: Console,
     session,
@@ -168,6 +173,7 @@ async def _conversation_loop(
     skill_selector,
     staging,
     command_context: dict,
+    active_tasks: dict[str, object],
 ) -> None:
     from henk.commands import dispatch_command
     from henk.dispatcher import CancelMessage, ProgressMessage, ResultMessage, TaskMessage
@@ -177,27 +183,7 @@ async def _conversation_loop(
     from henk.router import ProviderSelectionError
     from henk.router.providers.base import ProviderRequestError
 
-    # active_tasks: dict van task_id -> Requirements (voor routing)
-    active_tasks: dict[str, object] = {}
-
     while True:
-        # Verwerk berichten uit result_queue (non-blocking)
-        while True:
-            try:
-                msg = result_queue.get_nowait()
-                if isinstance(msg, ResultMessage):
-                    if msg.success:
-                        print_henk(console, msg.response, gateway)
-                    else:
-                        console.print(f"[red]{msg.error}[/red]")
-                    task_display.print_static_panel()
-                    # Verwijder uit active_tasks
-                    active_tasks.pop(msg.run_id, None)
-                elif isinstance(msg, ProgressMessage):
-                    task_display.update(msg.status)
-            except asyncio.QueueEmpty:
-                break
-
         # Wacht op gebruikersinput
         try:
             user_input = await session.prompt_async(
@@ -301,12 +287,158 @@ async def _conversation_loop(
             console.print("[dim]Sessie-samenvatting in staging gezet.[/dim]")
 
 
+def _build_task_message(requirements) -> str:
+    task_msg = requirements.task_description
+    specifications = requirements.specifications
+    if isinstance(specifications, list):
+        specifications = "\n".join(f"- {str(item).strip()}" for item in specifications if str(item).strip())
+    if specifications:
+        task_msg += "\n\nEisen:\n" + str(specifications)
+    return task_msg
+
+
+def _build_retry_task_message(requirements, previous_result: str, feedback: str) -> str:
+    base = _build_task_message(requirements)
+    return (
+        f"{base}\n\n"
+        "Vorige poging:\n"
+        f"{previous_result}\n\n"
+        "Interne kwaliteitscontrole:\n"
+        f"{feedback or 'Verbeter het resultaat zodat het volledig aan de taak en eisen voldoet.'}\n\n"
+        "Maak een verbeterde versie. Geef alleen het nieuwe eindresultaat terug."
+    )
+
+
+async def _run_task_with_quality_gate(
+    *,
+    brain,
+    react_loop,
+    skill_runner,
+    skill_selector,
+    req,
+    on_status,
+    max_content_retries: int,
+    transcript,
+) -> tuple[str, bool, str | None]:
+    from henk.brain import FinalCheckDecision
+
+    skill = skill_selector.select(req.task_description) if req.skill_name and skill_selector else None
+    task_msg = _build_task_message(req)
+    attempt = 0
+    max_attempts = max(1, max_content_retries + 1)
+
+    while attempt < max_attempts:
+        use_skill = attempt == 0 and skill is not None
+        if use_skill:
+            response = await skill_runner.run(skill, req, on_status=on_status)
+        else:
+            response = await react_loop.run(
+                task_msg,
+                on_status=on_status,
+                requirements=req,
+            )
+
+        decision = await brain.req_final_check(req, response)
+        transcript.log_event(
+            {
+                "type": "task.final_check",
+                "task_id": req.task_id,
+                "attempt": attempt + 1,
+                "forward_to_user": decision.forward_to_user,
+                "feedback": decision.feedback,
+            }
+        )
+        if decision.forward_to_user:
+            return response, True, None
+
+        attempt += 1
+        if attempt >= max_attempts:
+            feedback = decision.feedback.strip()
+            error_msg = "Ik heb wel aan de taak gewerkt, maar het resultaat voldoet nog niet genoeg om door te sturen."
+            if feedback:
+                error_msg = f"{error_msg} {feedback}"
+            return "", False, error_msg
+
+        if on_status:
+            on_status("Henk verbetert het resultaat...")
+        task_msg = _build_retry_task_message(req, response, decision.feedback)
+
+    return "", False, "Ik kon geen bruikbaar resultaat afronden."
+
+
+async def _render_while_prompt_active(session, render_fn) -> None:
+    await run_in_terminal(render_fn, in_executor=False)
+    if getattr(session, "app", None) is not None:
+        session.app.invalidate()
+
+
+async def _handle_result_message(
+    *,
+    msg,
+    console: Console,
+    gateway,
+    task_display,
+    session,
+    active_tasks: dict[str, object],
+) -> None:
+    from henk.dispatcher import ProgressMessage, ResultMessage
+    from henk.output import print_henk
+
+    if isinstance(msg, ProgressMessage):
+        task_display.update(msg.status)
+        if getattr(session, "app", None) is not None:
+            session.app.invalidate()
+        return
+
+    if not isinstance(msg, ResultMessage):
+        return
+
+    def _render_result() -> None:
+        if msg.success:
+            print_henk(console, msg.response, gateway)
+        else:
+            console.print(f"[red]{msg.error}[/red]")
+            console.print()
+        task_display.print_static_panel()
+
+    await _render_while_prompt_active(session, _render_result)
+    task_display.clear_status()
+    if getattr(session, "app", None) is not None:
+        session.app.invalidate()
+    active_tasks.pop(msg.run_id, None)
+
+
+async def _result_loop(
+    *,
+    result_queue: asyncio.Queue,
+    console: Console,
+    gateway,
+    task_display,
+    session,
+    active_tasks: dict[str, object],
+) -> None:
+    while True:
+        msg = await result_queue.get()
+        try:
+            await _handle_result_message(
+                msg=msg,
+                console=console,
+                gateway=gateway,
+                task_display=task_display,
+                session=session,
+                active_tasks=active_tasks,
+            )
+        finally:
+            result_queue.task_done()
+
+
 async def _work_loop(
     brain,
     gateway,
     react_loop,
     skill_runner,
     skill_selector,
+    config,
     task_queue: asyncio.Queue,
     result_queue: asyncio.Queue,
     task_display,
@@ -350,37 +482,25 @@ async def _work_loop(
                 pass
 
         try:
-            if req.skill_name and skill_selector:
-                skill = skill_selector.select(req.task_description)
-                if skill:
-                    response = await skill_runner.run(
-                        skill,
-                        req,
-                        on_status=_on_status,
-                    )
-                else:
-                    response = await react_loop.run(
-                        req.task_description,
-                        on_status=_on_status,
-                        requirements=req,
-                    )
+            response, success, error_msg = await _run_task_with_quality_gate(
+                brain=brain,
+                react_loop=react_loop,
+                skill_runner=skill_runner,
+                skill_selector=skill_selector,
+                req=req,
+                on_status=_on_status,
+                max_content_retries=config.max_retries_content,
+                transcript=transcript,
+            )
+
+            if success:
+                req.complete(response)
+                gateway.complete_run(gw_run_id)
+                transcript.write("assistant", response)
             else:
-                task_msg = req.task_description
-                if req.specifications:
-                    task_msg += "\n\nEisen:\n" + req.specifications
-                response = await react_loop.run(
-                    task_msg,
-                    on_status=_on_status,
-                    requirements=req,
-                )
-
-            final = await brain.req_final_check(req, response)
-            if final:
-                response = f"{response}\n\n{final}"
-
-            req.complete(response)
-            gateway.complete_run(gw_run_id)
-            transcript.write("assistant", response)
+                gateway.fail_run(gw_run_id)
+                req.fail(error_msg or "Resultaat afgekeurd door kwaliteitscontrole.")
+                transcript.write("assistant", error_msg or "Resultaat afgekeurd door kwaliteitscontrole.")
 
         except KillSwitchActive as e:
             gateway.fail_run(gw_run_id)
@@ -480,7 +600,13 @@ async def start_repl(config: Config, console: Console) -> None:
             total_str = f"{total / 1000:.1f}k tokens"
         inp_str = str(inp) if inp < 1000 else f"{inp / 1000:.1f}k"
         out_str = str(out) if out < 1000 else f"{out / 1000:.1f}k"
-        return HTML(f"<b>Sessie:</b> {total_str}  ({inp_str} in \u00b7 {out_str} uit)")
+        parts = [f"<b>Sessie:</b> {total_str}  ({inp_str} in \u00b7 {out_str} uit)"]
+        active_count = sum(1 for task in gateway.get_task_state() if task.status.value == "active")
+        if active_count:
+            parts.append(f"<b>Taken:</b> {active_count} actief")
+        if task_display.status_message:
+            parts.append(escape(task_display.status_message))
+        return HTML("  \u00b7  ".join(parts))
 
     session = PromptSession(
         completer=_build_completer(),
@@ -502,6 +628,7 @@ async def start_repl(config: Config, console: Console) -> None:
 
     task_queue: asyncio.Queue = asyncio.Queue()
     result_queue: asyncio.Queue = asyncio.Queue()
+    active_tasks: dict[str, object] = {}
 
     work_task = asyncio.create_task(
         _work_loop(
@@ -510,10 +637,21 @@ async def start_repl(config: Config, console: Console) -> None:
             react_loop=react_loop,
             skill_runner=skill_runner,
             skill_selector=skill_selector,
+            config=config,
             task_queue=task_queue,
             result_queue=result_queue,
             task_display=task_display,
             transcript=transcript,
+        )
+    )
+    result_task = asyncio.create_task(
+        _result_loop(
+            result_queue=result_queue,
+            console=console,
+            gateway=gateway,
+            task_display=task_display,
+            session=session,
+            active_tasks=active_tasks,
         )
     )
     try:
@@ -521,7 +659,6 @@ async def start_repl(config: Config, console: Console) -> None:
             brain=brain,
             gateway=gateway,
             task_queue=task_queue,
-            result_queue=result_queue,
             config=config,
             console=console,
             session=session,
@@ -529,13 +666,19 @@ async def start_repl(config: Config, console: Console) -> None:
             skill_selector=skill_selector,
             staging=staging,
             command_context=command_context,
+            active_tasks=active_tasks,
         )
     except KeyboardInterrupt:
         pass
     finally:
         work_task.cancel()
+        result_task.cancel()
         try:
             await work_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await result_task
         except asyncio.CancelledError:
             pass
         heartbeat.stop()

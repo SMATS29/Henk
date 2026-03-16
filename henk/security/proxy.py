@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from urllib.parse import parse_qs, urlparse
 
-import requests as http_requests
+try:
+    import requests as http_requests
+except ModuleNotFoundError:
+    from henk._stubs import requests as http_requests
 
 
 class SecurityProxy:

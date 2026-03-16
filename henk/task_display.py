@@ -140,6 +140,13 @@ class TaskDisplay:
         if self._live is not None:
             self._live.update(self._render())
 
+    @property
+    def status_message(self) -> str:
+        return self._status_message
+
+    def clear_status(self) -> None:
+        self.update("")
+
     def update_task(self, message: str) -> None:
         """Update het taakpaneel."""
         self.update(message)

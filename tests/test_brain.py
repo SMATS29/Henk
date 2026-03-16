@@ -196,3 +196,59 @@ def test_brain_routes_all_llm_calls_via_model_gateway():
         "refine_requirements",
         "summarize_session",
     ]
+
+
+def test_req_final_check_returns_structured_decision():
+    provider = DummyProvider([
+        ProviderResponse(text='{"forward_to_user": false, "feedback": "Werk de conclusie uit."}', tool_calls=None, raw=None),
+    ])
+    brain = Brain(_make_config(), model_gateway=DummyModelGateway(provider))
+    requirements = Requirements(task_description="maak een rapport")
+
+    decision = asyncio.run(brain.req_final_check(requirements, "te kort"))
+
+    assert decision.forward_to_user is False
+    assert decision.feedback == "Werk de conclusie uit."
+
+
+def test_req_final_check_defaults_to_forward_on_invalid_json():
+    provider = DummyProvider([
+        ProviderResponse(text="geen json", tool_calls=None, raw=None),
+    ])
+    brain = Brain(_make_config(), model_gateway=DummyModelGateway(provider))
+    requirements = Requirements(task_description="maak een rapport")
+
+    decision = asyncio.run(brain.req_final_check(requirements, "ok"))
+
+    assert decision.forward_to_user is True
+    assert decision.feedback == ""
+
+
+def test_req_build_normalizes_specifications_list():
+    provider = DummyProvider([
+        ProviderResponse(
+            text='{"task_description": "maak een rapport", "summary": "rapport", "specifications": ["kort", "in het Nederlands"]}',
+            tool_calls=None,
+            raw=None,
+        ),
+    ])
+    brain = Brain(_make_config(), model_gateway=DummyModelGateway(provider))
+
+    req = asyncio.run(brain.req_build("maak een rapport"))
+
+    assert req.specifications == "- kort\n- in het Nederlands"
+
+
+def test_req_build_normalizes_specifications_dict():
+    provider = DummyProvider([
+        ProviderResponse(
+            text='{"task_description": "maak een rapport", "summary": "rapport", "specifications": {"taal": "Nederlands", "lengte": "kort"}}',
+            tool_calls=None,
+            raw=None,
+        ),
+    ])
+    brain = Brain(_make_config(), model_gateway=DummyModelGateway(provider))
+
+    req = asyncio.run(brain.req_build("maak een rapport"))
+
+    assert req.specifications == "- taal: Nederlands\n- lengte: kort"

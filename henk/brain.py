@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 from typing import Any
 
 from henk.config import Config
@@ -282,7 +283,8 @@ class Brain:
                 "Analyseer de gebruikersinput en stel een Requirements object op. "
                 "task_description: de kerntaak in één zin. "
                 "summary: één korte identificeerbare zin voor routing. "
-                "specifications: concrete eisen uit de input. "
+                "specifications: concrete eisen uit de input als korte tekst of bullets. "
+                "Gebruik GEEN geneste JSON, dicts, arrays of schema-uitleg in specifications. "
                 'Geef JSON terug: {"task_description": "...", "summary": "...", "specifications": "..."}'
             ),
             purpose="req_build",
@@ -297,7 +299,7 @@ class Brain:
             data = json.loads(cleaned.strip())
             req = Requirements(
                 task_description=data.get("task_description", user_input),
-                specifications=data.get("specifications", ""),
+                specifications=self._normalize_specifications(data.get("specifications", "")),
                 status=RequirementsStatus.DRAFT,
             )
             req.summary = data.get("summary", user_input[:60])
@@ -353,6 +355,7 @@ class Brain:
             system=(
                 "Verwerk de nieuwe gebruikersinput in de bestaande requirements. "
                 "Behoud bestaande informatie en voeg nieuwe toe. "
+                "specifications moet platte tekst of bullets blijven, geen object of array. "
                 'Geef JSON terug: {"task_description": "...", "summary": "...", "specifications": "..."}'
             ),
             purpose="req_merge",
@@ -367,19 +370,22 @@ class Brain:
             data = json.loads(cleaned.strip())
             requirements.task_description = data.get("task_description", requirements.task_description)
             requirements.summary = data.get("summary", requirements.summary)
-            requirements.specifications = data.get("specifications", requirements.specifications)
+            requirements.specifications = self._normalize_specifications(
+                data.get("specifications", requirements.specifications)
+            )
         except (json.JSONDecodeError, KeyError):
             requirements.add_specification(new_input)
         requirements.pending_update = True
         return requirements
 
-    async def req_final_check(self, requirements: Requirements, result: str) -> str:
-        """Vergelijk het resultaat met de requirements en geef een beknopte evaluatie."""
+    async def req_final_check(self, requirements: Requirements, result: str) -> FinalCheckDecision:
+        """Beoordeel of het resultaat direct naar de gebruiker mag."""
         user_prompt = (
             f"Taak: {requirements.task_description}\n"
             f"Eisen: {requirements.specifications or '(geen)'}\n"
             f"Resultaat: {result}\n\n"
-            "Geef een beknopte evaluatie: wat is gelukt, wat ontbreekt eventueel."
+            'Geef JSON terug: {"forward_to_user": true, "feedback": ""} '
+            'of {"forward_to_user": false, "feedback": "..."}'
         )
         eval_result = await asyncio.to_thread(
             self._model_gateway.chat,
@@ -387,12 +393,30 @@ class Brain:
             messages=[{"role": "user", "content": user_prompt}],
             system=(
                 "Vergelijk het resultaat met de requirements. "
-                "Geef een beknopte evaluatie als vrije tekst: wat is gelukt, wat eventueel ontbreekt. "
-                "Dit is geen nieuwe taakuitvoering — alleen een beoordeling."
+                "Bepaal of dit resultaat direct naar de gebruiker mag. "
+                "Gebruik forward_to_user=true als het resultaat inhoudelijk bruikbaar is en de taak in hoofdzaak uitvoert. "
+                "Wees pragmatisch: kleine stijlvoorkeuren, formulering, toon of compacte herformuleringen zijn GEEN reden om te blokkeren. "
+                "Gebruik forward_to_user=false alleen als het resultaat duidelijk onjuist, onveilig, incompleet of strijdig met expliciete eisen is. "
+                "feedback moet dan kort en concreet uitleggen wat ontbreekt of verbeterd moet worden. "
+                "Geef alleen JSON terug."
             ),
             purpose="req_final_check",
         )
-        return eval_result.response.text or ""
+        text = eval_result.response.text or ""
+        try:
+            cleaned = text.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("```")[1]
+                if cleaned.startswith("json"):
+                    cleaned = cleaned[4:]
+            data = json.loads(cleaned.strip())
+            forward_to_user = bool(data.get("forward_to_user", True))
+            feedback = str(data.get("feedback", "")).strip()
+            if not forward_to_user and not feedback:
+                feedback = "Het resultaat voldoet nog niet volledig aan de taak of eisen."
+            return FinalCheckDecision(forward_to_user=forward_to_user, feedback=feedback)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            return FinalCheckDecision(forward_to_user=True, feedback="")
 
     def _build_system_prompt(self, user_message: str) -> str:
         parts: list[str] = []
@@ -404,6 +428,28 @@ class Brain:
         if memory_context:
             parts.append(f"## Geheugen\n{memory_context}")
         return "\n\n".join(parts)
+
+    def _normalize_specifications(self, value: Any) -> str:
+        if isinstance(value, dict):
+            parts: list[str] = []
+            for key, raw in value.items():
+                label = str(key).strip().replace("_", " ")
+                rendered = self._normalize_specification_value(raw)
+                if rendered:
+                    parts.append(f"{label}: {rendered}")
+            return "\n".join(f"- {item}" for item in parts)
+        if isinstance(value, list):
+            parts = [self._normalize_specification_value(item) for item in value]
+            parts = [item for item in parts if item]
+            return "\n".join(f"- {item}" for item in parts)
+        if value is None:
+            return ""
+        return self._normalize_specification_value(value)
+
+    def _normalize_specification_value(self, value: Any) -> str:
+        if isinstance(value, (list, dict)):
+            return self._normalize_specifications(value)
+        return str(value).strip()
 
     def _anthropic_tools(self) -> list[dict[str, Any]]:
         return [
@@ -417,3 +463,9 @@ class Brain:
                 },
             }
         ]
+
+
+@dataclass(frozen=True)
+class FinalCheckDecision:
+    forward_to_user: bool
+    feedback: str = ""

@@ -18,10 +18,24 @@ class ProviderRequestError(RuntimeError):
 def classify_provider_error(error: Exception) -> str:
     """Classificeer providerfouten voor duidelijke CLI-meldingen."""
     message = str(error).lower()
+    if any(
+        token in message
+        for token in (
+            "model_not_found",
+            "model not found",
+            "does not exist",
+            "unknown model",
+            "unsupported model",
+            "invalid model",
+        )
+    ):
+        return "model_unavailable"
     if any(token in message for token in ("connection", "connect", "timeout", "timed out", "dns", "unreachable", "refused")):
         return "network_unavailable"
     if any(token in message for token in ("authentication", "auth", "api key", "unauthorized", "forbidden", "401", "403")):
         return "authentication_failed"
+    if any(token in message for token in ("not installed", "no module named", "package is niet beschikbaar")):
+        return "dependency_missing"
     return "request_failed"
 
 

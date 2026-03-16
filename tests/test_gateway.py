@@ -151,12 +151,32 @@ class DummyRouter:
         return f"{provider.name}/{provider._model}"
 
 
+class CandidateRouter(DummyRouter):
+    def __init__(self, providers):
+        self._providers = providers
+        self.calls = []
+
+    def get_provider_candidates(self, role=ModelRole.DEFAULT, require_tools=False):
+        self.calls.append((role, require_tools))
+        return self._providers
+
+
 class FailingRouter:
     def get_provider(self, role=ModelRole.DEFAULT, require_tools=False):
         raise ProviderSelectionError(role, [ProviderAttempt("openai/gpt-5.2", "missing_credentials")])
 
     def provider_label(self, provider):
         return "n/a"
+
+
+class FailingProvider(DummyProvider):
+    def __init__(self, reason: str, detail: str = "fout"):
+        self._reason = reason
+        self._detail = detail
+        self._model = "m"
+
+    def chat(self, **kwargs):
+        raise ProviderRequestError("dummy", self._reason, self._detail)
 
 
 def test_model_gateway_tracks_calls_and_tokens(config):
@@ -212,6 +232,29 @@ def test_model_gateway_logs_error_events_to_transcript(config):
     assert record["type"] == "model.error"
     assert record["reason"] == "selection_failed"
     assert record["attempts"][0]["reason"] == "missing_credentials"
+
+
+def test_model_gateway_retries_with_fallback_provider(config):
+    transcript = TranscriptWriter(config.logs_dir)
+    providers = [
+        FailingProvider("model_unavailable", "model does not exist"),
+        DummyProvider(ProviderResponse(text="Via fallback", tool_calls=None, raw=None, input_tokens=5, output_tokens=2)),
+    ]
+    model_gateway = ModelGateway(CandidateRouter(providers), transcript)
+
+    result = model_gateway.chat(
+        role=ModelRole.DEFAULT,
+        messages=[{"role": "user", "content": "hallo"}],
+        system="s",
+        purpose="think",
+    )
+
+    assert result.response.text == "Via fallback"
+    assert model_gateway.call_count == 2
+    records = [json.loads(line) for line in transcript.file_path.read_text(encoding="utf-8").splitlines()]
+    assert records[-3]["type"] == "model.error"
+    assert records[-3]["retrying_with_fallback"] is True
+    assert records[-1]["type"] == "model.response"
 
 
 # --- Token tracking & run lifecycle tests ---

@@ -8,7 +8,7 @@ from henk.router.providers.base import ProviderRequestError
 from henk.router.providers.deepseek import DeepSeekProvider
 from henk.router.providers.lmstudio import LMStudioProvider
 from henk.router.providers.ollama import OllamaProvider
-from henk.router.providers.openai_provider import OpenAICompatibleProvider
+from henk.router.providers.openai_provider import OpenAICompatibleProvider, OpenAIProvider
 
 
 @patch("henk.router.providers.anthropic.anthropic.Anthropic")
@@ -132,6 +132,23 @@ def test_openai_compatible_skips_empty_system_message(mock_openai):
     assert sent_messages == [{"role": "user", "content": "h"}]
 
 
+@patch("henk.router.providers.openai_provider.openai.OpenAI")
+def test_openai_provider_uses_max_completion_tokens(mock_openai):
+    mock_client = MagicMock()
+    mock_openai.return_value = mock_client
+    msg = SimpleNamespace(content="antwoord", tool_calls=None)
+    mock_client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=msg)], usage=None
+    )
+
+    provider = OpenAIProvider(api_key="k", model="gpt-5-mini")
+    provider.chat(messages=[{"role": "user", "content": "h"}], system="s", max_tokens=321)
+
+    kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert kwargs["max_completion_tokens"] == 321
+    assert "max_tokens" not in kwargs
+
+
 @patch("henk.router.providers.anthropic.anthropic.Anthropic")
 def test_anthropic_provider_wraps_network_errors(mock_cls):
     mock_client = MagicMock()
@@ -156,3 +173,29 @@ def test_openai_compatible_wraps_auth_errors(mock_openai):
         provider.chat(messages=[{"role": "user", "content": "h"}], system="s")
 
     assert exc_info.value.reason == "authentication_failed"
+
+
+@patch("henk.router.providers.openai_provider.openai.OpenAI")
+def test_openai_compatible_wraps_missing_dependency_errors(mock_openai):
+    mock_client = MagicMock()
+    mock_openai.return_value = mock_client
+    mock_client.chat.completions.create.side_effect = RuntimeError("openai package is niet beschikbaar in deze omgeving")
+
+    provider = OpenAICompatibleProvider(api_key="k", model="m")
+    with pytest.raises(ProviderRequestError) as exc_info:
+        provider.chat(messages=[{"role": "user", "content": "h"}], system="s")
+
+    assert exc_info.value.reason == "dependency_missing"
+
+
+@patch("henk.router.providers.openai_provider.openai.OpenAI")
+def test_openai_compatible_wraps_invalid_model_errors(mock_openai):
+    mock_client = MagicMock()
+    mock_openai.return_value = mock_client
+    mock_client.chat.completions.create.side_effect = RuntimeError("The model `gpt-x` does not exist")
+
+    provider = OpenAICompatibleProvider(api_key="k", model="gpt-x")
+    with pytest.raises(ProviderRequestError) as exc_info:
+        provider.chat(messages=[{"role": "user", "content": "h"}], system="s")
+
+    assert exc_info.value.reason == "model_unavailable"

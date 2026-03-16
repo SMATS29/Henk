@@ -99,8 +99,12 @@ class ModelRouter:
         raise RuntimeError(f"Onbekende provider: {provider_name}")
 
     def get_provider(self, role: ModelRole = ModelRole.DEFAULT, *, require_tools: bool = False) -> BaseProvider:
+        return self.get_provider_candidates(role, require_tools=require_tools)[0]
+
+    def get_provider_candidates(self, role: ModelRole = ModelRole.DEFAULT, *, require_tools: bool = False) -> list[BaseProvider]:
         providers_for_role = self._role_mapping.get(role, [])
         attempts: list[ProviderAttempt] = []
+        available: list[BaseProvider] = []
         for provider_key in providers_for_role:
             provider = self._providers.get(provider_key)
             if not provider:
@@ -110,8 +114,11 @@ class ModelRouter:
                 continue
             reason = self._availability_reason(provider_key, provider)
             if reason is None:
-                return provider
+                available.append(provider)
+                continue
             attempts.append(ProviderAttempt(provider_key, reason))
+        if available:
+            return available
         raise ProviderSelectionError(role, attempts)
 
     def _availability_reason(self, provider_key: str, provider: BaseProvider) -> str | None:

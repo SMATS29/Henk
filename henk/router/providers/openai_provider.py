@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import openai
+try:
+    import openai
+except ModuleNotFoundError:
+    from henk._stubs import openai
 
 from henk.router.providers.base import (
     BaseProvider,
@@ -17,12 +20,20 @@ from henk.router.providers.base import (
 class OpenAICompatibleProvider(BaseProvider):
     name = "openai-compatible"
 
-    def __init__(self, *, api_key: str, model: str, base_url: str | None = None):
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        base_url: str | None = None,
+        max_tokens_param: str = "max_tokens",
+    ):
         if base_url:
             self._client = openai.OpenAI(api_key=api_key, base_url=base_url)
         else:
             self._client = openai.OpenAI(api_key=api_key)
         self._model = model
+        self._max_tokens_param = max_tokens_param
 
     def chat(
         self,
@@ -36,9 +47,9 @@ class OpenAICompatibleProvider(BaseProvider):
             openai_messages = [{"role": "system", "content": system}] + openai_messages
         kwargs: dict[str, Any] = {
             "model": self._model,
-            "max_tokens": max_tokens,
             "messages": openai_messages,
         }
+        kwargs[self._max_tokens_param] = max_tokens
         if tools:
             kwargs["tools"] = self._convert_tools(tools)
 
@@ -117,4 +128,4 @@ class OpenAIProvider(OpenAICompatibleProvider):
     name = "openai"
 
     def __init__(self, api_key: str, model: str):
-        super().__init__(api_key=api_key, model=model)
+        super().__init__(api_key=api_key, model=model, max_tokens_param="max_completion_tokens")

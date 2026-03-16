@@ -55,7 +55,10 @@ class ModelGateway:
         require_tools: bool = False,
     ) -> ModelCallResult:
         try:
-            provider = self._router.get_provider(role, require_tools=require_tools)
+            if hasattr(self._router, "get_provider_candidates"):
+                providers = self._router.get_provider_candidates(role, require_tools=require_tools)
+            else:
+                providers = [self._router.get_provider(role, require_tools=require_tools)]
         except ProviderSelectionError as error:
             self._log_event(
                 {
@@ -68,50 +71,67 @@ class ModelGateway:
             )
             raise
 
-        provider_label = self._router.provider_label(provider)
-        self._call_count += 1
-        self._log_event(
-            {
-                "type": "model.request",
-                "purpose": purpose,
-                "role": role.value,
-                "provider": provider_label,
-                "message_count": len(messages),
-                "has_tools": bool(tools),
-                "max_tokens": max_tokens,
-            }
-        )
-
-        try:
-            response = provider.chat(messages=messages, system=system, tools=tools, max_tokens=max_tokens)
-        except ProviderRequestError as error:
+        last_error: ProviderRequestError | None = None
+        for index, provider in enumerate(providers, start=1):
+            provider_label = self._router.provider_label(provider)
+            self._call_count += 1
             self._log_event(
                 {
-                    "type": "model.error",
+                    "type": "model.request",
                     "purpose": purpose,
                     "role": role.value,
                     "provider": provider_label,
-                    "reason": error.reason,
-                    "detail": error.detail,
+                    "message_count": len(messages),
+                    "has_tools": bool(tools),
+                    "max_tokens": max_tokens,
+                    "attempt": index,
                 }
             )
-            raise
 
-        self._token_tracker.add(response.input_tokens, response.output_tokens)
-        if self._on_token_usage:
-            self._on_token_usage(response.input_tokens, response.output_tokens)
-        self._log_event(
-            {
-                "type": "model.response",
-                "purpose": purpose,
-                "role": role.value,
-                "provider": provider_label,
-                "input_tokens": response.input_tokens,
-                "output_tokens": response.output_tokens,
-                "tool_call_count": len(response.tool_calls or []),
-            }
-        )
-        return ModelCallResult(provider=provider, response=response)
+            try:
+                response = provider.chat(messages=messages, system=system, tools=tools, max_tokens=max_tokens)
+            except ProviderRequestError as error:
+                retrying_with_fallback = index < len(providers) and self._should_retry_with_fallback(error)
+                self._log_event(
+                    {
+                        "type": "model.error",
+                        "purpose": purpose,
+                        "role": role.value,
+                        "provider": provider_label,
+                        "reason": error.reason,
+                        "detail": error.detail,
+                        "attempt": index,
+                        "retrying_with_fallback": retrying_with_fallback,
+                    }
+                )
+                last_error = error
+                if retrying_with_fallback:
+                    continue
+                raise
+
+            self._token_tracker.add(response.input_tokens, response.output_tokens)
+            if self._on_token_usage:
+                self._on_token_usage(response.input_tokens, response.output_tokens)
+            self._log_event(
+                {
+                    "type": "model.response",
+                    "purpose": purpose,
+                    "role": role.value,
+                    "provider": provider_label,
+                    "input_tokens": response.input_tokens,
+                    "output_tokens": response.output_tokens,
+                    "tool_call_count": len(response.tool_calls or []),
+                    "attempt": index,
+                }
+            )
+            return ModelCallResult(provider=provider, response=response)
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Geen modelproviders beschikbaar na selectie.")
+
+    def _should_retry_with_fallback(self, error: ProviderRequestError) -> bool:
+        return error.reason in {"model_unavailable", "network_unavailable"}
 
     def _log_event(self, event: dict[str, Any]) -> None:
         if self._transcript is None:
