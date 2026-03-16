@@ -152,8 +152,7 @@ class TaskDisplay:
         self._status_message = ""
 
     def print_static_panel(self) -> None:
-        """Print een statisch snapshot van het taakpaneel en statusbalk."""
+        """Print een statisch snapshot van het taakpaneel."""
         tasks = self._gateway.get_task_state()
         if tasks:
             self._console.print(_build_task_table(tasks))
-        self._console.print(_build_status_bar(self._gateway))

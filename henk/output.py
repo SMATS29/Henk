@@ -21,6 +21,4 @@ def print_henk(console: Console, text: str, gateway: Gateway) -> None:
     except Exception:
         console.print(f"[cyan]{text}[/cyan]")
 
-    token_text = f"sessie: {_format_tokens(gateway.session_tokens_total)}"
-    console.print(f"[dim][right]{token_text}[/right][/dim]")
     console.print()

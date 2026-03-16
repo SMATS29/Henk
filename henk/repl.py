@@ -503,7 +503,6 @@ async def start_repl(config: Config, console: Console) -> None:
     task_queue: asyncio.Queue = asyncio.Queue()
     result_queue: asyncio.Queue = asyncio.Queue()
 
-    task_display.open_session()
     work_task = asyncio.create_task(
         _work_loop(
             brain=brain,
@@ -540,6 +539,5 @@ async def start_repl(config: Config, console: Console) -> None:
         except asyncio.CancelledError:
             pass
         heartbeat.stop()
-        task_display.close_session()
 
     console.print(f"\nTranscript bewaard in {transcript.file_path}")
