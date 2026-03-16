@@ -202,7 +202,6 @@ class Brain:
                             f"{requirements.specifications}"
                         )
                         messages.append({"role": "user", "content": update_msg})
-                        messages.append({"role": "assistant", "content": ""})
 
     async def summarize_session(self) -> str | None:
         if not self._history:

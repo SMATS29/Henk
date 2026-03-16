@@ -209,6 +209,7 @@ class Gateway:
         if rid and rid in self._runs:
             self._runs[rid].status = RunStatus.DONE
             self._runs[rid].ended_at = datetime.now()
+        self._current_run_id = None
 
     def fail_run(self, run_id: str | None = None) -> None:
         """Markeer een run als mislukt."""
@@ -216,6 +217,7 @@ class Gateway:
         if rid and rid in self._runs:
             self._runs[rid].status = RunStatus.FAILED
             self._runs[rid].ended_at = datetime.now()
+        self._current_run_id = None
 
     def record_token_usage(self, tokens_input: int, tokens_output: int) -> None:
         """Registreer tokengebruik (brain.token_usage) voor actieve run en sessie."""

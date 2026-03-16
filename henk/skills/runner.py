@@ -29,7 +29,11 @@ class SkillRunner:
 
             try:
                 step_prompt = self._build_step_prompt(step, requirements, results)
-                result = await self._react_loop.run(step_prompt, on_status=on_status)
+                result = await self._react_loop.run(
+                    step_prompt,
+                    on_status=on_status,
+                    requirements=requirements,
+                )
 
                 step.status = StepStatus.COMPLETED
                 step.result = result

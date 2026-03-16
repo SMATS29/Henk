@@ -200,8 +200,7 @@ async def _conversation_loop(
 
         # Wacht op gebruikersinput
         try:
-            user_input = await asyncio.to_thread(
-                session.prompt,
+            user_input = await session.prompt_async(
                 HTML("<prompt>❯ </prompt>"),
                 completer=_build_completer(),
             )
@@ -254,8 +253,7 @@ async def _conversation_loop(
                 while question:
                     print_henk(console, question, gateway)
                     try:
-                        follow_up = await asyncio.to_thread(
-                            session.prompt,
+                        follow_up = await session.prompt_async(
                             HTML("<prompt>❯ </prompt>"),
                             completer=_build_completer(),
                         )
