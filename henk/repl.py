@@ -257,6 +257,7 @@ async def _conversation_loop(
                 active_tasks[run_id] = req
 
                 await task_queue.put(TaskMessage(run_id=run_id, requirements=req))
+                console.print("[dim]Taak gestart — ik ga aan de slag. Je kunt intussen gewoon doorpraten.[/dim]")
 
         except KillSwitchActive as error:
             console.print(f"[red]Henk is gestopt ({error.switch_type}). Typ /resume om te hervatten.[/red]")
@@ -380,12 +381,21 @@ async def _handle_result_message(
     task_display,
     session,
     active_tasks: dict[str, object],
+    notified_runs: set,
 ) -> None:
     from henk.dispatcher import ProgressMessage, ResultMessage
     from henk.output import print_henk
 
     if isinstance(msg, ProgressMessage):
         task_display.update(msg.status)
+        if msg.run_id not in notified_runs:
+            notified_runs.add(msg.run_id)
+            status_text = msg.status
+
+            def _print_status() -> None:
+                console.print(f"[dim cyan]⟳ {status_text}[/dim cyan]")
+
+            await _render_while_prompt_active(session, _print_status)
         if getattr(session, "app", None) is not None:
             session.app.invalidate()
         return
@@ -417,6 +427,7 @@ async def _result_loop(
     session,
     active_tasks: dict[str, object],
 ) -> None:
+    notified_runs: set = set()
     while True:
         msg = await result_queue.get()
         try:
@@ -427,6 +438,7 @@ async def _result_loop(
                 task_display=task_display,
                 session=session,
                 active_tasks=active_tasks,
+                notified_runs=notified_runs,
             )
         finally:
             result_queue.task_done()
