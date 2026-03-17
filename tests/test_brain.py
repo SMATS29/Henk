@@ -252,3 +252,61 @@ def test_req_build_normalizes_specifications_dict():
     req = asyncio.run(brain.req_build("maak een rapport"))
 
     assert req.specifications == "- taal: Nederlands\n- lengte: kort"
+
+
+def test_classify_and_build_returns_gesprek():
+    provider = DummyProvider([
+        ProviderResponse(text='{"type": "gesprek", "task_id": null, "question": null}', tool_calls=None, raw=None),
+    ])
+    gateway = DummyModelGateway(provider)
+    brain = Brain(_make_config(), model_gateway=gateway)
+
+    result = asyncio.run(brain.classify_and_build("hoe gaat het?", []))
+
+    assert result["type"] == "gesprek"
+    assert result["task_id"] is None
+    assert gateway.calls[0]["role"].value == "fast"
+    assert gateway.calls[0]["purpose"] == "classify_and_build"
+
+
+def test_classify_and_build_returns_new_task_payload():
+    provider = DummyProvider([
+        ProviderResponse(
+            text=(
+                '{"type": "nieuwe_taak", "task_id": null, "task_description": "Schrijf een essay over Parijs", '
+                '"summary": "Essay over Parijs", "specifications": ["500 woorden", "formeel"], "question": null}'
+            ),
+            tool_calls=None,
+            raw=None,
+        ),
+    ])
+    brain = Brain(_make_config(), model_gateway=DummyModelGateway(provider))
+
+    result = asyncio.run(brain.classify_and_build("schrijf een essay over Parijs van 500 woorden", []))
+
+    assert result == {
+        "type": "nieuwe_taak",
+        "task_id": None,
+        "task_description": "Schrijf een essay over Parijs",
+        "summary": "Essay over Parijs",
+        "specifications": "- 500 woorden\n- formeel",
+        "question": None,
+    }
+
+
+def test_classify_and_build_falls_back_to_raw_input_on_invalid_json():
+    provider = DummyProvider([
+        ProviderResponse(text="geen json", tool_calls=None, raw=None),
+    ])
+    brain = Brain(_make_config(), model_gateway=DummyModelGateway(provider))
+
+    result = asyncio.run(brain.classify_and_build("maak een planning", []))
+
+    assert result == {
+        "type": "nieuwe_taak",
+        "task_id": None,
+        "task_description": "maak een planning",
+        "summary": "maak een planning",
+        "specifications": "",
+        "question": None,
+    }

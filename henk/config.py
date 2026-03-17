@@ -21,9 +21,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "deepseek": {"api_key_env": "DEEPSEEK_API_KEY"},
     },
     "roles": {
-        "fast": {"primary": "openai/gpt-5-mini", "fallback": ["openai/gpt-5.2"]},
-        "default": {"primary": "openai/gpt-5.2", "fallback": ["openai/gpt-5-mini"]},
-        "heavy": {"primary": "openai/gpt-5.2", "fallback": ["openai/gpt-5-mini"]},
+        "fast": {"primary": "anthropic/claude-3-5-haiku-latest", "fallback": ["anthropic/claude-3-5-sonnet-latest"]},
+        "default": {"primary": "anthropic/claude-3-5-sonnet-latest", "fallback": ["anthropic/claude-3-5-haiku-latest"]},
+        "heavy": {"primary": "anthropic/claude-3-5-sonnet-latest", "fallback": ["anthropic/claude-3-5-haiku-latest"]},
     },
     "security": {
         "proxy": {

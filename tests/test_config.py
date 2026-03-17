@@ -13,7 +13,7 @@ def test_default_config_has_required_fields():
     assert config.heartbeat_interval == 30
     assert config.user_name == ""
     assert config.identity_prompt_enabled is False
-    assert config.roles_config["default"]["primary"] == "openai/gpt-5.2"
+    assert config.roles_config["default"]["primary"] == "anthropic/claude-3-5-sonnet-latest"
 
 
 def test_deep_merge():

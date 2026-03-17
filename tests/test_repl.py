@@ -1,20 +1,25 @@
+import asyncio
+
 import pytest
 
 prompt_toolkit = pytest.importorskip("prompt_toolkit")
 Document = prompt_toolkit.document.Document
 
 from copy import deepcopy
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from henk.config import Config, DEFAULT_CONFIG
+from henk.gateway import RunStatus, TaskInfo
 from henk.repl import (
     SlashCommandAutoSuggest,
-    _handle_result_message,
-    _run_task_with_quality_gate,
     _build_completer,
+    _build_bottom_toolbar_markup,
     _build_key_bindings,
+    _handle_result_message,
     _message_for_model_error,
+    _run_task_with_quality_gate,
     _startup_missing_key_message,
 )
 from henk.dispatcher import ProgressMessage, ResultMessage
@@ -151,7 +156,29 @@ def test_handle_result_message_updates_status_and_invalidates_prompt():
     )
 
     task_display.update.assert_called_once_with("Henk denkt...")
-    session.app.invalidate.assert_called_once()
+    assert session.app.invalidate.call_count >= 1
+
+
+def test_build_bottom_toolbar_markup_shows_active_task_time_and_tokens():
+    now = datetime(2026, 3, 17, 12, 0, 0)
+    gateway = MagicMock()
+    gateway.get_task_state.return_value = [
+        TaskInfo(
+            run_id="run-1",
+            summary="Essay over Parijs, 500 woorden",
+            status=RunStatus.ACTIVE,
+            started_at=now - timedelta(minutes=2, seconds=5),
+            ended_at=None,
+            tokens_input=800,
+            tokens_output=450,
+        )
+    ]
+    gateway.session_tokens_total = 1250
+
+    markup = _build_bottom_toolbar_markup(gateway, now=now)
+
+    assert "<b>Essay over Parijs, 500 woorden</b>  2:05  1.2k tokens" in markup
+    assert "Sessie: 1.2k tokens" in markup
 
 
 def test_run_task_with_quality_gate_retries_until_forwarded():

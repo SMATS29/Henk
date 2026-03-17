@@ -11,7 +11,7 @@ from henk.tools.base import ToolResult
 from henk.gateway import Gateway, KillSwitchActive, RunStatus
 from henk.model_gateway import ModelGateway
 from henk.router import ModelRole, ProviderAttempt, ProviderSelectionError
-from henk.router.providers.base import ProviderResponse
+from henk.router.providers.base import ProviderRequestError, ProviderResponse
 from henk.transcript import TranscriptWriter
 
 

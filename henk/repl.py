@@ -180,6 +180,7 @@ async def _conversation_loop(
     from henk.gateway import KillSwitchActive
     from henk.memory import ChangeType, Provenance, StagedChange
     from henk.output import print_henk
+    from henk.requirements import Requirements, RequirementsStatus
     from henk.router import ProviderSelectionError
     from henk.router.providers.base import ProviderRequestError
 
@@ -208,11 +209,13 @@ async def _conversation_loop(
         try:
             # Bouw lijst van actieve taken voor routing
             active_task_summaries = [
-                (req.task_id, req.summary)
+                (req.task_id, req.summary or req.task_description)
                 for req in active_tasks.values()
             ]
 
-            route_type, route_task_id = await brain.classify_and_route(stripped, active_task_summaries)
+            route = await brain.classify_and_build(stripped, active_task_summaries)
+            route_type = route.get("type", "nieuwe_taak")
+            route_task_id = route.get("task_id")
 
             if route_type == "gesprek":
                 response = await brain.think(stripped)
@@ -227,16 +230,20 @@ async def _conversation_loop(
 
             else:
                 # nieuwe_taak
-                req = await brain.req_build(stripped)
+                req = Requirements(
+                    task_description=str(route.get("task_description") or stripped).strip() or stripped,
+                    specifications=str(route.get("specifications") or ""),
+                    status=RequirementsStatus.DRAFT,
+                )
+                req.summary = str(route.get("summary") or req.task_description[:60]).strip() or req.task_description[:60]
 
                 if skill_selector:
                     skill = skill_selector.select(req.task_description)
                     if skill:
                         req.skill_name = skill.name
 
-                # Verfijningslus
-                question = await brain.req_check(req)
-                while question:
+                question = route.get("question")
+                if question:
                     print_henk(console, question, gateway)
                     try:
                         follow_up = await session.prompt_async(
@@ -244,12 +251,14 @@ async def _conversation_loop(
                             completer=_build_completer(),
                         )
                     except (EOFError, KeyboardInterrupt):
-                        break
+                        console.print("[dim]Taak niet gestart.[/dim]")
+                        continue
                     follow_up = follow_up.strip()
-                    if follow_up:
-                        await brain.req_merge(req, follow_up)
-                        req.pending_update = False  # reset, was net gebouwd
-                    question = await brain.req_check(req)
+                    if not follow_up:
+                        console.print("[dim]Taak niet gestart.[/dim]")
+                        continue
+                    await brain.req_merge(req, follow_up)
+                    req.pending_update = False  # reset, was net gebouwd
 
                 req.confirm()
 
@@ -257,7 +266,8 @@ async def _conversation_loop(
                 active_tasks[run_id] = req
 
                 await task_queue.put(TaskMessage(run_id=run_id, requirements=req))
-                console.print("[dim]Taak gestart — ik ga aan de slag. Je kunt intussen gewoon doorpraten.[/dim]")
+                summary = req.summary or req.task_description[:50]
+                console.print(f"[dim]Taak gestart: {summary}. Je kunt intussen gewoon doorpraten.[/dim]")
 
         except KillSwitchActive as error:
             console.print(f"[red]Henk is gestopt ({error.switch_type}). Typ /resume om te hervatten.[/red]")
@@ -308,6 +318,27 @@ def _build_retry_task_message(requirements, previous_result: str, feedback: str)
         f"{feedback or 'Verbeter het resultaat zodat het volledig aan de taak en eisen voldoet.'}\n\n"
         "Maak een verbeterde versie. Geef alleen het nieuwe eindresultaat terug."
     )
+
+
+def _build_bottom_toolbar_markup(gateway, now: datetime | None = None) -> str:
+    parts: list[str] = []
+    current_time = now or datetime.now()
+
+    for task in gateway.get_task_state():
+        if task.status.value != "active":
+            continue
+        elapsed = max((current_time - task.started_at).total_seconds(), 0)
+        minutes = int(elapsed) // 60
+        secs = int(elapsed) % 60
+        total_tokens = task.tokens_input + task.tokens_output
+        tok_str = f"{total_tokens}" if total_tokens < 1000 else f"{total_tokens / 1000:.1f}k"
+        summary = escape((task.summary or "taak")[:35])
+        parts.append(f"<b>{summary}</b>  {minutes}:{secs:02d}  {tok_str} tokens")
+
+    total = gateway.session_tokens_total
+    total_str = f"{total} tokens" if total < 1000 else f"{total / 1000:.1f}k tokens"
+    parts.append(f"Sessie: {total_str}")
+    return "  ·  ".join(parts)
 
 
 async def _run_task_with_quality_gate(
@@ -381,10 +412,13 @@ async def _handle_result_message(
     task_display,
     session,
     active_tasks: dict[str, object],
-    notified_runs: set,
+    notified_runs: set | None = None,
 ) -> None:
     from henk.dispatcher import ProgressMessage, ResultMessage
     from henk.output import print_henk
+
+    if notified_runs is None:
+        notified_runs = set()
 
     if isinstance(msg, ProgressMessage):
         task_display.update(msg.status)
@@ -475,10 +509,10 @@ async def _work_loop(
         run_id = message.run_id  # task_id, used for queue tracking
 
         # Start de run
-        gw_run_id = gateway.start_run(req.task_description)
+        gw_run_id = gateway.start_run(req.summary or req.task_description[:80])
         gateway.active_requirements[req.task_id] = req
 
-        await result_queue.put(ProgressMessage(run_id=run_id, status="Henk denkt..."))
+        await result_queue.put(ProgressMessage(run_id=run_id, status=req.summary or req.task_description[:50]))
 
         req.start_execution()
         transcript.write("user", req.task_description)
@@ -562,7 +596,6 @@ async def start_repl(config: Config, console: Console) -> None:
     skill_selector = SkillSelector(config.skills_dir, model_gateway) if config.skills_enabled else None
     brain = Brain(config, model_gateway=model_gateway, memory_retrieval=retrieval, skill_selector=skill_selector)
     gateway = Gateway(config, brain, transcript)
-    model_gateway.on_token_usage = gateway.record_token_usage
     proxy = SecurityProxy(config.proxy_allowed_domains, config.proxy_allowed_methods)
 
     heartbeat = Heartbeat(interval_seconds=config.heartbeat_interval)
@@ -603,22 +636,7 @@ async def start_repl(config: Config, console: Console) -> None:
         console.print("[dim]Shift+Enter wordt in deze terminal niet apart herkend. Typ /help voor uitleg.[/dim]\n")
 
     def _bottom_toolbar():
-        total = gateway.session_tokens_total
-        inp = gateway.session_tokens_input
-        out = gateway.session_tokens_output
-        if total < 1000:
-            total_str = f"{total} tokens"
-        else:
-            total_str = f"{total / 1000:.1f}k tokens"
-        inp_str = str(inp) if inp < 1000 else f"{inp / 1000:.1f}k"
-        out_str = str(out) if out < 1000 else f"{out / 1000:.1f}k"
-        parts = [f"<b>Sessie:</b> {total_str}  ({inp_str} in \u00b7 {out_str} uit)"]
-        active_count = sum(1 for task in gateway.get_task_state() if task.status.value == "active")
-        if active_count:
-            parts.append(f"<b>Taken:</b> {active_count} actief")
-        if task_display.status_message:
-            parts.append(escape(task_display.status_message))
-        return HTML("  \u00b7  ".join(parts))
+        return HTML(_build_bottom_toolbar_markup(gateway))
 
     session = PromptSession(
         completer=_build_completer(),
@@ -630,6 +648,13 @@ async def start_repl(config: Config, console: Console) -> None:
         prompt_continuation="  ",
         bottom_toolbar=_bottom_toolbar,
     )
+
+    def _on_token_usage(tokens_in: int, tokens_out: int) -> None:
+        gateway.record_token_usage(tokens_in, tokens_out)
+        if getattr(session, "app", None) is not None:
+            session.app.invalidate()
+
+    model_gateway.on_token_usage = _on_token_usage
     command_context = {
         "brain": brain,
         "router": router,

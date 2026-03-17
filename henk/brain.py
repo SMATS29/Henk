@@ -254,13 +254,7 @@ class Brain:
         )
         text = result.response.text or ""
         try:
-            # Strip markdown code blocks if present
-            cleaned = text.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("```")[1]
-                if cleaned.startswith("json"):
-                    cleaned = cleaned[4:]
-            data = json.loads(cleaned.strip())
+            data = self._parse_json_response(text)
             route_type = data.get("type", "nieuwe_taak")
             task_id = data.get("task_id")
             if route_type not in ("gesprek", "nieuwe_taak", "update_taak"):
@@ -268,6 +262,71 @@ class Brain:
             return route_type, task_id
         except (json.JSONDecodeError, KeyError):
             return "nieuwe_taak", None
+
+    async def classify_and_build(
+        self,
+        user_input: str,
+        active_tasks: list[tuple[str, str]],
+    ) -> dict[str, Any]:
+        """Classificeer input en bouw voor nieuwe taken direct de task-data op."""
+        task_list = ""
+        if active_tasks:
+            task_list = "\nActieve taken:\n" + "\n".join(
+                f"{i+1}. [{task_id}] {summary}" for i, (task_id, summary) in enumerate(active_tasks)
+            )
+
+        user_prompt = (
+            f'Gebruikersinput: "{user_input}"{task_list}\n\n'
+            "Geef JSON terug: "
+            '{'
+            '"type": "gesprek"|"nieuwe_taak"|"update_taak", '
+            '"task_id": null|"<id>", '
+            '"task_description": "...", '
+            '"summary": "...", '
+            '"specifications": "...", '
+            '"question": null|"..."}'
+        )
+
+        result = await asyncio.to_thread(
+            self._model_gateway.chat,
+            role=ModelRole.FAST,
+            messages=[{"role": "user", "content": user_prompt}],
+            system=(
+                "Classificeer de gebruikersinput en als het een taak is stel meteen een Requirements object op. "
+                "type is gesprek, nieuwe_taak of update_taak. "
+                "task_id is alleen gevuld bij update_taak. "
+                "task_description: de kerntaak in één zin. "
+                "summary: één korte identificeerbare zin voor het taakpaneel (max 40 tekens). "
+                "specifications: concrete eisen uit de input als platte tekst of bullets. "
+                "Gebruik GEEN geneste JSON, dicts, arrays of schema-uitleg in specifications. "
+                "question: als cruciale informatie ontbreekt stel precies één gerichte vraag, anders null. "
+                "Geef altijd alleen JSON terug."
+            ),
+            purpose="classify_and_build",
+        )
+        text = result.response.text or ""
+        try:
+            data = self._parse_json_response(text)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            return self._fallback_task_payload(user_input)
+
+        route_type = str(data.get("type", "nieuwe_taak")).strip()
+        if route_type not in ("gesprek", "nieuwe_taak", "update_taak"):
+            route_type = "nieuwe_taak"
+
+        question = data.get("question")
+        normalized_question = None if question is None else str(question).strip()
+        if normalized_question and normalized_question.lower() in {"null", "none"}:
+            normalized_question = None
+
+        return {
+            "type": route_type,
+            "task_id": data.get("task_id"),
+            "task_description": str(data.get("task_description") or user_input).strip() or user_input,
+            "summary": str(data.get("summary") or user_input).strip() or user_input,
+            "specifications": self._normalize_specifications(data.get("specifications", "")),
+            "question": normalized_question or None,
+        }
 
     async def req_build(self, user_input: str) -> Requirements:
         """Bouw een Requirements object op uit gebruikersinput."""
@@ -291,12 +350,7 @@ class Brain:
         )
         text = result.response.text or ""
         try:
-            cleaned = text.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("```")[1]
-                if cleaned.startswith("json"):
-                    cleaned = cleaned[4:]
-            data = json.loads(cleaned.strip())
+            data = self._parse_json_response(text)
             req = Requirements(
                 task_description=data.get("task_description", user_input),
                 specifications=self._normalize_specifications(data.get("specifications", "")),
@@ -328,12 +382,7 @@ class Brain:
         )
         text = result.response.text or ""
         try:
-            cleaned = text.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("```")[1]
-                if cleaned.startswith("json"):
-                    cleaned = cleaned[4:]
-            data = json.loads(cleaned.strip())
+            data = self._parse_json_response(text)
             if data.get("complete", True):
                 return None
             return data.get("question")
@@ -362,12 +411,7 @@ class Brain:
         )
         text = result.response.text or ""
         try:
-            cleaned = text.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("```")[1]
-                if cleaned.startswith("json"):
-                    cleaned = cleaned[4:]
-            data = json.loads(cleaned.strip())
+            data = self._parse_json_response(text)
             requirements.task_description = data.get("task_description", requirements.task_description)
             requirements.summary = data.get("summary", requirements.summary)
             requirements.specifications = self._normalize_specifications(
@@ -404,12 +448,7 @@ class Brain:
         )
         text = eval_result.response.text or ""
         try:
-            cleaned = text.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("```")[1]
-                if cleaned.startswith("json"):
-                    cleaned = cleaned[4:]
-            data = json.loads(cleaned.strip())
+            data = self._parse_json_response(text)
             forward_to_user = bool(data.get("forward_to_user", True))
             feedback = str(data.get("feedback", "")).strip()
             if not forward_to_user and not feedback:
@@ -428,6 +467,27 @@ class Brain:
         if memory_context:
             parts.append(f"## Geheugen\n{memory_context}")
         return "\n\n".join(parts)
+
+    def _parse_json_response(self, text: str) -> dict[str, Any]:
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("```")[1]
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:]
+        data = json.loads(cleaned.strip())
+        if not isinstance(data, dict):
+            raise TypeError("JSON response must be an object.")
+        return data
+
+    def _fallback_task_payload(self, user_input: str) -> dict[str, Any]:
+        return {
+            "type": "nieuwe_taak",
+            "task_id": None,
+            "task_description": user_input,
+            "summary": user_input,
+            "specifications": "",
+            "question": None,
+        }
 
     def _normalize_specifications(self, value: Any) -> str:
         if isinstance(value, dict):
